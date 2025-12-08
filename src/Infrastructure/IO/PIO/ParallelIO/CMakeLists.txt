@@ -10,7 +10,7 @@ project (PIO C)
 # The project version number.
 set(VERSION_MAJOR   2   CACHE STRING "Project major version number.")
 set(VERSION_MINOR   6   CACHE STRING "Project minor version number.")
-set(VERSION_PATCH   6   CACHE STRING "Project patch version number.")
+set(VERSION_PATCH   2   CACHE STRING "Project patch version number.")
 mark_as_advanced(VERSION_MAJOR VERSION_MINOR VERSION_PATCH)
 
 # Create version info in autotools parlance for pio_meta.h.
@@ -29,18 +29,18 @@ include(CheckSymbolExists)
 
 # Determine the configure date.
 IF(DEFINED ENV{SOURCE_DATE_EPOCH})
-        EXECUTE_PROCESS(
-          COMMAND "date" "-u" "-d" "@$ENV{SOURCE_DATE_EPOCH}"
-          OUTPUT_VARIABLE CONFIG_DATE
-          )
+	EXECUTE_PROCESS(
+	  COMMAND "date" "-u" "-d" "@$ENV{SOURCE_DATE_EPOCH}"
+	  OUTPUT_VARIABLE CONFIG_DATE
+	  )
 ELSE()
-        EXECUTE_PROCESS(
-          COMMAND date
-          OUTPUT_VARIABLE CONFIG_DATE
-          )
+	EXECUTE_PROCESS(
+	  COMMAND date
+	  OUTPUT_VARIABLE CONFIG_DATE
+	  )
 ENDIF()
 IF(CONFIG_DATE)
-        string(STRIP ${CONFIG_DATE} CONFIG_DATE)
+	string(STRIP ${CONFIG_DATE} CONFIG_DATE)
 ENDIF()
 
 # A function used to create autotools-style 'yes/no' definitions.
@@ -95,6 +95,7 @@ option (PIO_USE_MPIIO        "Enable support for MPI-IO auto detect"        ON)
 option (PIO_USE_MPISERIAL    "Enable mpi-serial support (instead of MPI)"   OFF)
 option (PIO_USE_PNETCDF_VARD       "Use pnetcdf put_vard "  OFF)
 option (WITH_PNETCDF         "Require the use of PnetCDF"                   ON)
+option (PIO_USE_GDAL         "Enable support for Geospatial Data Abstraction Library ON")
 option (BUILD_SHARED_LIBS    "Build shared libraries"                       OFF)
 
 if(APPLE)
@@ -109,6 +110,14 @@ if(PIO_USE_PNETCDF_VARD)
 else()
   set(USE_VARD 0)
 endif()
+
+# Set a variable that appears in the config.h.in file.
+if(PIO_USE_GDAL)
+  set(USE_GDAL 1)
+else()
+  set(USE_GDAL 0)
+endif()
+
 
 # Set a variable that appears in the config.h.in file.
 if(PIO_ENABLE_LOGGING)
@@ -244,7 +253,7 @@ if (PIO_ENABLE_COVERAGE)
 endif ()
 
 # Allow argument mismatch in gfortran versions > 10 for mpi library compatibility
-if (CMAKE_Fortran_COMPILER_NAME STREQUAL "GNU")
+if (CMAKE_C_COMPILER_NAME STREQUAL "GNU")
   if ("${CMAKE_Fortran_COMPILER_VERSION}" VERSION_LESS 10)
     message (WARNING "gfortran version is ${CMAKE_Fortran_COMPILER_VERSION}")
   else()
@@ -352,7 +361,7 @@ CHECK_C_SOURCE_COMPILES("
 #if !NC_HAS_SZIP_WRITE
       choke me
 #endif
-int main() {return 0;}" USE_SZIP)
+int main() {return 0;}" HAVE_SZIP_WRITE)
 
 ###
 # Check to see if parallel filters are supported by HDF5/netcdf-c.
@@ -363,9 +372,9 @@ if (HAVE_NETCDF_PAR)
 #if !NC_HAS_PAR_FILTERS
     choke me
 #endif
-int main() {return 0;}" PIO_HAS_PAR_FILTERS)
+int main() {return 0;}" HAVE_PAR_FILTERS)
 else()
-  set(PIO_HAS_PAR_FILTERS 0)
+  set(HAVE_PAR_FILTERS 0)
 endif()
 
 ###
@@ -486,7 +495,7 @@ set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib")
 INSTALL(FILES "${PIO_BINARY_DIR}/libpio.settings"
   DESTINATION lib
   COMPONENT libraries)
-
+  
 #####
 # Create pio_meta.h include file.
 #####

@@ -1,6 +1,7 @@
 #include <config.h>
 #include <pio.h>
 #include <pio_internal.h>
+#ifdef USE_GDAL
 #include <ogr_api.h>
 
 /**
@@ -462,11 +463,6 @@ int GDALc_inq_timeid(int fileid, int *timeid) { // Is there a field of type OFTD
     for (int i=0;i<(file->nvars)-1;i++) {
       OGRFieldDefnH hFlD = OGR_FD_GetFieldDefn(hFD,i);
       OGRFieldType Fld = OGR_Fld_GetType(hFlD);
-      if (Fld == NULL)
-        return pio_err(NULL, NULL, ierr, __FILE__, __LINE__);
-
-//      const char* FldTyp = OGR_GetFieldTypeName(Fld);
-//      PRINTMSG("Field type: " << FldTyp);
     }
 
 //    OGR_FD_Destroy(hFD);
@@ -827,10 +823,10 @@ GDALc_shp_get_float_field(int fileid, int varid, const size_t *startp,
     // PLOG((3,"NULL at FID: %d  i: %d  start %d count %d",feat_id,i,startp[0],countp[0]));
     ip[i] = (float)OGR_F_GetFieldAsDouble(hF,varid);
     total += ip[i];
-    printf("%d: i: %d index: %d feat_id: %d countp %d value %f total %f\n",rank,i,i+startp[0],feat_id,countp[0],ip[i],total);
+//    printf("%d: i: %d index: %d feat_id: %d countp %d value %f total %f\n",rank,i,i+startp[0],feat_id,countp[0],ip[i],total);
   }
 
-  printf("%d: total %f (count %d)\n",rank,total,countp[0]);
+//  printf("%d: total %f (count %d)\n",rank,total,countp[0]);
 
   return PIO_NOERR;
 }
@@ -1253,3 +1249,4 @@ pio_read_darray_shp_par(file_desc_t *file, io_desc_t *iodesc, int vid, void *iob
 /**
  * @}
  */
+#endif
