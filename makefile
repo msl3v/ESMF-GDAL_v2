@@ -268,6 +268,18 @@ endif
 	    echo "ESMF_GDAL_LIBPATH:    $(ESMF_GDAL_LIBPATH)" ; \
 	  fi; \
 	 fi
+	-@if [ -n "$(ESMF_PMETIS)" ] ; then \
+	  echo "ESMF_PMETIS:            $(ESMF_PMETIS)" ; \
+	  if [ -n "$(ESMF_PMETIS_INCLUDE)" ] ; then \
+	    echo "ESMF_PMETIS_INCLUDE:    $(ESMF_PMETIS_INCLUDE)" ; \
+	  fi; \
+	  if [ -n "$(ESMF_PMETIS_LIBS)" ] ; then \
+	    echo "ESMF_PMETIS_LIBS:       $(ESMF_PMETIS_LIBS)" ; \
+	  fi; \
+	  if [ -n "$(ESMF_PMETIS_LIBPATH)" ] ; then \
+	    echo "ESMF_PMETIS_LIBPATH:    $(ESMF_PMETIS_LIBPATH)" ; \
+	  fi; \
+	 fi
 	-@if [ -n "$(ESMF_XERCES)" ] ; then \
 	  echo "ESMF_XERCES:             $(ESMF_XERCES)" ; \
 	  if [ -n "$(ESMF_XERCES_INCLUDE)" ] ; then \
@@ -697,6 +709,18 @@ endif
 	  fi; \
 	  if [ -n "$(ESMF_GDAL_LIBPATH)" ] ; then \
 	    echo "# ESMF_GDAL_LIBPATH:   $(ESMF_GDAL_LIBPATH)" >> $(MKINFO) ; \
+	  fi; \
+	 fi
+	-@if [ -n "$(ESMF_PMETIS)" ] ; then \
+	  echo "# ESMF_PMETIS:           $(ESMF_PMETIS)" >> $(MKINFO) ; \
+	  if [ -n "$(ESMF_PMETIS_INCLUDE)" ] ; then \
+	    echo "# ESMF_PMETIS_INCLUDE:   $(ESMF_PMETIS_INCLUDE)" >> $(MKINFO) ; \
+	  fi; \
+	  if [ -n "$(ESMF_PMETIS_LIBS)" ] ; then \
+	    echo "# ESMF_PMETIS_LIBS:      $(ESMF_PMETIS_LIBS)" >> $(MKINFO) ; \
+	  fi; \
+	  if [ -n "$(ESMF_PMETIS_LIBPATH)" ] ; then \
+	    echo "# ESMF_PMETIS_LIBPATH:   $(ESMF_PMETIS_LIBPATH)" >> $(MKINFO) ; \
 	  fi; \
 	 fi
 	-@if [ -n "$(ESMF_XERCES)" ] ; then \

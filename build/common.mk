@@ -1741,6 +1741,38 @@ endif
 
 
 #-------------------------------------------------------------------------------
+# ParMETIS C/C++ Library
+#-------------------------------------------------------------------------------
+ifeq ($(ESMF_PMETIS),standard)
+ifneq ($(origin ESMF_PMETIS_LIBS), environment)
+# BOB: LEAVE BLANK UNTIL I KNOW NAME OF PMETIS LIB
+#ESMF_PMETIS_LIBS = -lxerces-c
+ESMF_PMETIS_LIBS = 
+endif
+endif
+
+ifdef ESMF_PMETIS
+ESMF_CPPFLAGS                += -DESMF_PMETIS=1
+ifdef ESMF_PMETIS_INCLUDE
+ESMF_CXXCOMPILEPATHSTHIRD    += -I$(ESMF_PMETIS_INCLUDE)
+ESMF_F90COMPILEPATHSTHIRD    += -I$(ESMF_PMETIS_INCLUDE) #-I$(ESMF_PMETIS_MOD)
+endif
+ifdef ESMF_PMETIS_LIBS
+ESMF_CXXLINKLIBS          += $(ESMF_PMETIS_LIBS)
+ESMF_CXXLINKRPATHSTHIRD   += $(addprefix $(ESMF_CXXRPATHPREFIX),$(subst -L,,$(filter -L%,$(ESMF_PMETIS_LIBS))))
+ESMF_F90LINKLIBS          += $(ESMF_PMETIS_LIBS)
+ESMF_F90LINKRPATHSTHIRD   += $(addprefix $(ESMF_F90RPATHPREFIX),$(subst -L,,$(filter -L%,$(ESMF_PMETIS_LIBS))))
+endif
+ifdef ESMF_PMETIS_LIBPATH
+ESMF_CXXLINKPATHSTHIRD    += -L$(ESMF_PMETIS_LIBPATH)
+ESMF_F90LINKPATHSTHIRD    += -L$(ESMF_PMETIS_LIBPATH)
+ESMF_CXXLINKRPATHSTHIRD   += $(ESMF_CXXRPATHPREFIX)$(ESMF_PMETIS_LIBPATH)
+ESMF_F90LINKRPATHSTHIRD   += $(ESMF_F90RPATHPREFIX)$(ESMF_PMETIS_LIBPATH)
+endif
+endif
+
+
+#-------------------------------------------------------------------------------
 # XERCES C++ XML API
 #-------------------------------------------------------------------------------
 ifeq ($(ESMF_XERCES),standard)

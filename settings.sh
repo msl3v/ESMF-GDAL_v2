@@ -15,3 +15,12 @@ export ESMF_GDAL_LIBPATH=/home/ilcentro/tools/gdal-debug/lib64
 export ESMF_GDAL_LIBS=-lgdal
 export ESMF_BOPT=g
 export ESMF_CXXCOMPILEOPTS="-DESMFIO_DEBUG -DESMF_REGRID_DEBUG_WRITE_MESH"
+# ParMETIS for parallel network distribution
+export ESMF_PMETIS=true
+export ESMF_PMETIS_INCLUDE=/home/ilcentro/tools/parmetis/include
+export ESMF_PMETIS_LIBPATH=/home/ilcentro/tools/parmetis/lib
+export ESMF_PMETIS_LIBS=-lparmetis
+#export ESMF_PETSC_INCLUDE=/usr/lib64/gfortran/modules/mpich/petsc/ #/home/ilcentro/tools/parmetis/include
+#export ESMF_PETSC_MOD=/usr/include/petsc/
+#export ESMF_PETSC_LIBPATH=/home/ilcentro/tools/parmetis/lib
+#export ESMF_PETSC_LIBS=-lpetsc
