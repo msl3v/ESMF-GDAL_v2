@@ -6968,12 +6968,12 @@ contains
        return
     endif
     
-    ! ========== DEBUG: ParMETIS data received from C ==========
-    print *, '=========================================='
-    print *, 'DEBUG Rank', PetNo, ': ParMETIS data from shapefile_to_parmetis_graph_f'
-    print *, '  nnodes (local):', nnodes
-    print *, '  nedges (local):', nedges
-    print *, '=========================================='
+!XX    ! ========== DEBUG: ParMETIS data received from C ==========
+!XX    print *, '=========================================='
+!XX    print *, 'DEBUG Rank', PetNo, ': ParMETIS data from shapefile_to_parmetis_graph_f'
+!XX    print *, '  nnodes (local):', nnodes
+!XX    print *, '  nedges (local):', nedges
+!XX    print *, '=========================================='
 
     ! Convert C pointers to Fortran pointers
     call c_f_pointer(nodedist_ptr, nodedist, [PetCnt+1])
@@ -7116,24 +7116,24 @@ contains
        my_node_start = int(nodedist(PetNo+1))
        my_node_end = int(nodedist(PetNo+2)) - 1
        
-       ! ========== DEBUG: Node ownership range ==========
-       print *, '=========================================='
-       print *, 'DEBUG Rank', PetNo, ': Node ownership range'
-       print *, '  my_node_start (0-based) =', my_node_start
-       print *, '  my_node_end (0-based) =', my_node_end
-       print *, '  Number of nodes owned =', my_node_end - my_node_start + 1
-       print *, '  Global IDs (1-based): ', my_node_start+1, 'to', my_node_end+1
-       print *, '=========================================='
+!XX       ! ========== DEBUG: Node ownership range ==========
+!XX       print *, '=========================================='
+!XX       print *, 'DEBUG Rank', PetNo, ': Node ownership range'
+!XX       print *, '  my_node_start (0-based) =', my_node_start
+!XX       print *, '  my_node_end (0-based) =', my_node_end
+!XX       print *, '  Number of nodes owned =', my_node_end - my_node_start + 1
+!XX       print *, '  Global IDs (1-based): ', my_node_start+1, 'to', my_node_end+1
+!XX       print *, '=========================================='
 
        ! Convert CSR format to edge list
        edge_local = 0
        
-       ! ========== DEBUG: Edge construction ==========
-       print *, '=========================================='
-       print *, 'DEBUG Rank', PetNo, ': Converting CSR to edge list'
-       print *, '  Processing', nnodes, 'local nodes'
-       print *, '  Expected total edges:', nedges
-       print *, '=========================================='
+!XX       ! ========== DEBUG: Edge construction ==========
+!XX       print *, '=========================================='
+!XX       print *, 'DEBUG Rank', PetNo, ': Converting CSR to edge list'
+!XX       print *, '  Processing', nnodes, 'local nodes'
+!XX       print *, '  Expected total edges:', nedges
+!XX       print *, '=========================================='
        
        boundary_count = 0
        do i = 0, int(nnodes)-1
@@ -7177,17 +7177,17 @@ contains
           enddo
        enddo
        
-       ! ========== DEBUG: Edge construction results ==========
-       print *, '=========================================='
-       print *, 'DEBUG Rank', PetNo, ': Edge construction complete'
-       print *, '  Total edges created:', edge_local
-       print *, '  Expected edges:', nedges
-       print *, '  Boundary edges:', boundary_count
-       print *, '  Local edges:', edge_local - boundary_count
-       if (edge_local /= nedges) then
-          print *, '  *** WARNING: Edge count mismatch! ***'
-       end if
-       print *, '=========================================='
+!XX       ! ========== DEBUG: Edge construction results ==========
+!XX       print *, '=========================================='
+!XX       print *, 'DEBUG Rank', PetNo, ': Edge construction complete'
+!XX       print *, '  Total edges created:', edge_local
+!XX       print *, '  Expected edges:', nedges
+!XX       print *, '  Boundary edges:', boundary_count
+!XX       print *, '  Local edges:', edge_local - boundary_count
+!XX       if (edge_local /= nedges) then
+!XX          print *, '  *** WARNING: Edge count mismatch! ***'
+!XX       end if
+!XX       print *, '=========================================='
 !XX       if (PetNo == 0) then
 !XX          print *, '================================================================'
 !XX          print *, 'ParMETIS LocStream Created from Shapefile:'
