@@ -2569,7 +2569,7 @@ contains
 !   integer(ESMF_KIND_I4), pointer :: mptr(:)
    real(ESMF_KIND_R4), pointer :: mptr(:), mptr2(:)
    type(ESMF_ArraySpec)   :: arraySpec
-   type(ESMF_Mesh)        :: Mesh
+   type(ESMF_Mesh), allocatable :: Mesh(:)
    type(ESMF_Grid)        :: Grid
    character(len=*), parameter :: shapefileName = "data/test3_simple.shp"
    integer, allocatable   :: decomptile(:,:)

@@ -4,7 +4,12 @@ include_directories("${CMAKE_SOURCE_DIR}/tests/cunit")
 include_directories("${CMAKE_SOURCE_DIR}/src/clib")
 include_directories("${CMAKE_BINARY_DIR}")
 include_directories("${CMAKE_BINARY_DIR}/src/clib")
-
+if(DEFINED NetCDF_C_LIBDIR)
+  link_directories(${NetCDF_C_LIBDIR})
+endif()
+if(DEFINED PnetCDF_C_LIBDIR)
+  link_directories(${PnetCDF_C_LIBDIR})
+endif()
 # Compiler-specific compiler options
 if ("${CMAKE_C_COMPILER_ID}" STREQUAL "GNU")
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=c99")
@@ -24,7 +29,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -O0")
 
 
 set(CMAKE_MACOSX_RPATH 1)
-if(USE_GDAL)  
+if(PIO_ENABLE_GDAL)  
   set(CMAKE_BUILD_RPATH ${GDAL_LIBRARY_PATH})
 endif()
 #==============================================================================
@@ -125,8 +130,10 @@ if (NOT PIO_USE_MPISERIAL)
     target_link_libraries (test_simple pioc)
     add_executable (test_async_perf EXCLUDE_FROM_ALL test_async_perf.c test_common.c)
     target_link_libraries(test_async_perf pioc)
-    add_executable (test_gdal EXCLUDE_FROM_ALL test_gdal.c test_common.c)
-    target_link_libraries (test_gdal pioc)
+    if(PIO_ENABLE_GDAL)  
+      add_executable (test_gdal EXCLUDE_FROM_ALL test_gdal.c test_common.c)
+      target_link_libraries (test_gdal pioc)
+    endif()
 endif ()
 add_executable (test_spmd EXCLUDE_FROM_ALL test_spmd.c test_common.c)
 target_link_libraries (test_spmd pioc)
@@ -161,8 +168,9 @@ add_dependencies (tests test_async_manyproc)
 add_dependencies (tests test_async_1d)
 add_dependencies (tests test_simple)
 add_dependencies (tests test_async_perf)
-add_dependencies (tests test_gdal)
-
+if(PIO_ENABLE_GDAL)  
+  add_dependencies (tests test_gdal)
+endif()
 # Test Timeout in seconds.
 if (PIO_VALGRIND_CHECK)
   set (DEFAULT_TEST_TIMEOUT 800)
@@ -349,16 +357,14 @@ else ()
   #   EXECUTABLE ${CMAKE_CURRENT_BINARY_DIR}/test_async_perf
   #   NUMPROCS ${EXACTLY_FOUR_TASKS}
   #   TIMEOUT ${DEFAULT_TEST_TIMEOUT})
-  if(USE_GDAL)  
-    add_custom_target(link_target ALL
-                      COMMAND ${CMAKE_COMMAND} -E create_symlink
-                      ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/data)
+  if(PIO_ENABLE_GDAL)  
+  #  add_custom_target(link_target ALL
+  #                    COMMAND ${CMAKE_COMMAND} -E create_symlink
+  #                    ${CMAKE_CURRENT_SOURCE_DIR}/data ${CMAKE_CURRENT_BINARY_DIR}/data)
     add_mpi_test(test_gdal
       EXECUTABLE ${CMAKE_CURRENT_BINARY_DIR}/test_gdal
       NUMPROCS ${EXACTLY_FOUR_TASKS}
       TIMEOUT ${DEFAULT_TEST_TIMEOUT})
-    set_tests_properties(test_gdal PROPERTIES DEPENDS link_target)
-      
   endif()
 endif ()
 MESSAGE("CMAKE_EXE_LINKER_FLAGS ${CMAKE_EXE_LINKER_FLAGS}")

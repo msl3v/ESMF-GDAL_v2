@@ -47,7 +47,7 @@ endif
 
 ifdef ESMF_GDAL_LIBPATH
   GDAL_Found=true
-  PIO_CMAKE_OPTS += -DGDAL_INCLUDE_DIR=$(ESMF_GDAL_INCLUDE) -DGDAL_LIBRARY=$(ESMF_GDAL_LIBPATH)/libgdal.so
+  PIO_CMAKE_OPTS += -DPIO_USE_GDAL=ON -DGDAL_ROOT=/home/ilcentro/tools/gdal-debug/ # -DGDAL_INCLUDE_DIR=$(ESMF_GDAL_INCLUDE) -DGDAL_LIBRARY=$(ESMF_GDAL_LIBPATH)/libgdal.so
 endif
 
 ifndef PIO_AUTOTOOLS_BUILD
@@ -61,7 +61,7 @@ tree_lib:
 	make VERBOSE=1 -f ./Makefile; \
 	make -f ./Makefile install; \
 	cp -fp ../Install/include/* $(ESMF_INCDIR); \
-	cp -fp ../Install/lib/* $(ESMF_LDIR)
+	cp -rfp ../Install/lib/* $(ESMF_LDIR)
 else
 # Use the PIO native autoconf build system to build and install
 tree_lib:

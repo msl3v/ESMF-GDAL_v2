@@ -1,4 +1,4 @@
-cmake_minimum_required (VERSION 3.5.2)
+cmake_minimum_required (VERSION 3.10)
 include (CheckFunctionExists)
 project (PIOC C)
 
@@ -28,8 +28,8 @@ set (src topology.c pio_file.c pioc_support.c pio_lists.c
 if (NETCDF_INTEGRATION)
   set (src ${src} ../ncint/nc_get_vard.c ../ncint/ncintdispatch.c ../ncint/ncint_pio.c ../ncint/nc_put_vard.c)
 endif ()
-# This needs to be in an IF statement. using GDAL_INTEGRATION. But haven't figured that out yet.
-if (USE_GDAL)
+
+if (PIO_USE_GDAL)
   set (src ${src} pio_gdal.c)
 endif()
 
@@ -53,11 +53,11 @@ include_directories(
 
 # Include the clib source directory
 target_include_directories (pioc
-  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+  PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
 
 # Include the ncint source directory
 target_include_directories (pioc
-  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../ncint)
+  PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../ncint>)
 
 # System and compiler CPP directives
 target_compile_definitions (pioc
@@ -80,11 +80,21 @@ endif()
 #  DEFINE THE INSTALL
 #==============================================================================
 
+set_target_properties(pioc PROPERTIES EXPORT_NAME PIO_C)
+
 # Library
-install (TARGETS pioc DESTINATION lib)
+install (TARGETS pioc
+  EXPORT PIOCTargets
+  DESTINATION lib
+  INCLUDES DESTINATION include)
 
 # Include/Header Files
 install (FILES pio.h uthash.h DESTINATION include)
+
+install(EXPORT PIOCTargets
+  FILE PIOCTargets.cmake
+  NAMESPACE PIO::
+  DESTINATION lib/cmake/PIO)
 
 #==============================================================================
 #  DEFINE THE DEPENDENCIES
@@ -132,20 +142,24 @@ if (NetCDF_C_FOUND)
   endif()
 endif ()
 
+
 #===== PnetCDF-C =====
 if (PnetCDF_C_FOUND)
+  # Set include and library variables from top-level CACHE
+  set(PnetCDF_C_INCLUDE_DIRS "${PNETCDF_INCLUDEDIR}")
+  set(PnetCDF_C_LIBRARIES "${PNETCDF_LIBS}")
   target_include_directories (pioc
     PUBLIC ${PnetCDF_C_INCLUDE_DIRS})
   target_link_libraries (pioc
     PUBLIC ${PnetCDF_C_LIBRARIES})
 
   # Check library for varn functions
-  set (CMAKE_REQUIRED_LIBRARIES ${PnetCDF_C_LIBRARY})
+  set (CMAKE_REQUIRED_LIBRARIES ${PnetCDF_C_LIBRARIES})
 endif ()
 
 #===== Add EXTRAs =====
 target_include_directories (pioc
-  PUBLIC ${PIO_C_EXTRA_INCLUDE_DIRS})
+  PUBLIC $<BUILD_INTERFACE:${PIO_C_EXTRA_INCLUDE_DIRS}>)
 target_link_libraries (pioc
   PUBLIC ${PIO_C_EXTRA_LIBRARIES})
 target_compile_options (pioc
@@ -162,35 +176,37 @@ if (NOT PnetCDF_C_FOUND AND NOT NetCDF_C_FOUND)
   message (FATAL_ERROR "Must have PnetCDF and/or NetCDF C libraries")
 endif ()
 
-#===== MPI =====
-if (PIO_USE_MPISERIAL)
-  if (MPISERIAL_C_FOUND)
-    target_compile_definitions (pioc
-      PRIVATE _MPISERIAL)
-    target_include_directories (pioc
-      PUBLIC ${MPISERIAL_C_INCLUDE_DIRS})
-    target_link_libraries (pioc
-      PUBLIC ${MPISERIAL_C_LIBRARIES})
 
-    set (WITH_PNETCDF FALSE)
-    set (MPI_C_INCLUDE_PATH ${MPISERIAL_C_INCLUDE_DIRS})
-  endif ()
-endif ()
+#===== MPI =====
+if(PIO_USE_MPISERIAL)
+  if(MPISERIAL_C_FOUND)
+    target_compile_definitions(pioc
+      PRIVATE _MPISERIAL)
+    target_include_directories(pioc
+      PUBLIC ${MPISERIAL_C_INCLUDE_DIRS})
+    target_link_libraries(pioc
+      PUBLIC ${MPISERIAL_C_LIBRARIES})
+    set(WITH_PNETCDF FALSE)
+    set(MPI_C_INCLUDE_PATH ${MPISERIAL_C_INCLUDE_DIRS})
+  endif()
+endif()
+
 
 #===== GDAL ===== <M.Long>
-if (USE_GDAL)
+if (PIO_USE_GDAL)
   target_include_directories (pioc
-    PUBLIC ${GDAL_INCLUDE_DIR})
+    PUBLIC ${GDAL_INCLUDE_DIRS})
   target_link_libraries (pioc
-    PUBLIC "-L${GDAL_LIBRARY_PATH} -lgdal")
+    PUBLIC ${GDAL_LIBRARIES})
 endif ()
 
 include(CheckTypeSize)
 check_type_size("size_t" SIZEOF_SIZE_T)
 check_type_size("long long" SIZEOF_LONG_LONG)
-if (NOT "${SIZEOF_SIZE_T}" STREQUAL "${SIZEOF_LONG_LONG}")
-  message (FATAL_ERROR "size_t and long long must be the same size!")
-endif ()
+if(NOT "${SIZEOF_SIZE_T}" STREQUAL "${SIZEOF_LONG_LONG}")
+  message(FATAL_ERROR "size_t and long long must be the same size!")
+endif()
+
 
 set(CFLAGS "${CMAKE_C_FLAGS} ${CMAKE_C_FLAGS_${CMAKE_BUILD_TYPE}}" PARENT_SCOPE)
 get_target_property(cppdefs pioc COMPILE_DEFINITIONS)
@@ -199,7 +215,7 @@ foreach(x IN LISTS cppdefs)
   string(APPEND CPPFLAGS " -D${x}")
 endforeach()
 foreach(x IN LISTS includes)
-  if (x)
+  if(x)
     string(APPEND CPPFLAGS " -I${x}")
   endif()
 endforeach()
