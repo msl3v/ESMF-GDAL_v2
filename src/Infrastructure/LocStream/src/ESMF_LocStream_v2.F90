@@ -103,6 +103,13 @@ module ESMF_LocStreamMod
      integer, pointer                     :: adj_head(:)       ! Adjacency list head pointers
      integer, pointer                     :: adj_next(:)       ! Adjacency list next pointers
      logical, pointer                     :: is_boundary(:)    ! Boundary node flags (endpoints/junctions)
+     integer, pointer :: parmetis_nodedist(:) => null()
+     integer, pointer :: parmetis_xadj(:) => null()
+     integer, pointer :: parmetis_adjncy(:) => null()
+     real(ESMF_KIND_R8), pointer :: parmetis_node_x(:) => null()
+     real(ESMF_KIND_R8), pointer :: parmetis_node_y(:) => null()
+     integer :: parmetis_nnodes = 0
+     integer :: parmetis_nedges = 0
      ! ===============================================
      ESMF_INIT_DECLARE
   end type ESMF_LocStreamType
@@ -148,6 +155,7 @@ module ESMF_LocStreamMod
   public ESMF_LocStreamGetNeighbors
   public ESMF_LocStreamGetBoundaryFlags
   public ESMF_LocStreamAddGhostEdges
+  public ESMF_LocStreamGetParmetisData
   ! ===============================================
 
   ! - ESMF-internal methods:
@@ -188,6 +196,7 @@ module ESMF_LocStreamMod
      module procedure ESMF_LocStreamCreateByBkgMesh
      module procedure ESMF_LocStreamCreateByBkgGrid
      module procedure ESMF_LocStreamCreateFromFile
+     module procedure ESMF_LocStreamCreateFromParmetis
 
      ! !DESCRIPTION: 
      ! This interface provides a single entry point for the various 
@@ -367,6 +376,26 @@ module ESMF_LocStreamMod
   end interface operator(/=)
   !------------------------------------------------------------------------------
 
+! C interface
+  interface
+    subroutine shapefile_to_parmetis_graph_f(filename, comm, &
+         nodedist, xadj, adjncy, node_x, node_y, nnodes, nedges, tolerance, ierr) &
+         bind(C, name="shapefile_to_parmetis_graph_f")
+      use iso_c_binding
+      character(kind=c_char), dimension(*), intent(in) :: filename
+      integer(c_int), value, intent(in) :: comm
+      type(c_ptr), intent(out) :: nodedist, xadj, adjncy, node_x, node_y
+      integer(c_int), intent(out) :: nnodes, nedges
+      real(c_double), value, intent(in) :: tolerance
+      integer(c_int), intent(out) :: ierr
+    end subroutine
+    
+    subroutine free_parmetis_graph_f(nodedist, xadj, adjncy, node_x, node_y) &
+         bind(C, name="free_parmetis_graph_f")
+      use iso_c_binding
+      type(c_ptr), value, intent(in) :: nodedist, xadj, adjncy, node_x, node_y
+    end subroutine
+  end interface
 
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -1535,6 +1564,7 @@ contains
     lstypep%coordSys=coordSysLocal
     lstypep%destroyDistgrid=.false.
     lstypep%keyCount=0
+    lstypep%has_connectivity=.false.
 
     if (actualFlag) then
        ! only actual member PETs set distgrid
@@ -2189,8 +2219,7 @@ contains
   ! !INTERFACE:
   ! Private name: call using ESMF_LocStreamCreate()
   function ESMF_LocStreamCreateFromFile(filename, keywordEnforcer, &
-       fileformat, varname, indexflag, centerflag, name, &
-       extractConnectivity, bidirectional, rc)
+       fileformat, varname, indexflag, centerflag, name, rc)
     !
     ! !RETURN VALUE:
     type(ESMF_LocStream) :: ESMF_LocStreamCreateFromFile
@@ -2204,9 +2233,19 @@ contains
     type(ESMF_Index_Flag),      intent(in), optional :: indexflag
     logical,                    intent(in), optional :: centerflag
     character (len=*),          intent(in), optional :: name
-    logical,                    intent(in), optional :: extractConnectivity  ! MSL
-    logical,                    intent(in), optional :: bidirectional       ! MSL
     integer,                    intent(out),optional :: rc
+
+    ! For GDAL/METIS
+#ifdef ESMF_GDAL
+    type(c_ptr) :: nodedist_ptr, xadj_ptr, adjncy_ptr, node_x_ptr, node_y_ptr
+    integer(c_int32_t), pointer :: nodedist(:), xadj(:), adjncy(:)
+    real(c_double), pointer :: node_x(:), node_y(:)
+    integer(c_int) :: nnodes, nedges
+    integer :: c_ierr
+    character(kind=c_char, len=256) :: c_filename
+    integer :: mpi_comm
+    real(c_double) :: tol_val
+#endif
 
     ! !DESCRIPTION:
     !     Create a new {\tt ESMF\_LocStream} object and add the coordinate keys and mask key
@@ -2247,13 +2286,6 @@ contains
     !          is supported.
     !     \item[{[name]}]
     !          Name of the location stream
-    !     \item[{[extractConnectivity]}]
-    !          For polyline shapefiles, extract connectivity information from 
-    !          sequential vertices. This creates node-edge relationships suitable
-    !          for network analysis and routing. Defaults to .FALSE.
-    !     \item[{[bidirectional]}]
-    !          For network edges, create bidirectional connections (both forward
-    !          and reverse edges). Defaults to .TRUE.
     !     \item[{[rc]}]
     !          Return code; equals {\tt ESMF\_SUCCESS} if there are no errors.
     !   \end{description}
@@ -2271,7 +2303,7 @@ contains
     real(ESMF_KIND_R8), pointer :: coord2D(:,:), varbuffer(:)
     integer(ESMF_KIND_I4), pointer :: imask(:)
     integer :: starti, count, localcount, index
-    integer :: remain, i
+    integer :: remain, i, j
     integer :: meshid
     real(ESMF_KIND_R8) :: missingvalue
     type(ESMF_CoordSys_Flag) :: coordSys
@@ -2280,8 +2312,13 @@ contains
     logical :: localcenterflag, haveface
     character(len=16) :: units, location
 #ifdef ESMF_GDAL
-    integer :: nFeatures, locFeatures, localpoints, maxid, minid
-    integer(c_int), pointer :: lFIDs(:), gFIDs(:)
+    integer :: nFeatures, locFeatures, localpoints, totalfeatures, maxid, minid
+    integer :: iCountOnly
+    integer(c_int), pointer :: gFIDs(:)
+    integer, allocatable :: FIDs(:)
+    ! Variables for shapefile connectivity
+    type(ESMF_LocStreamType), pointer :: lstypep
+    integer :: edge_local, my_node_start, my_node_end, boundary_count
 #endif
 
     if (present(indexflag)) then
@@ -2420,45 +2457,62 @@ contains
        endif
        coordSys = ESMF_COORDSYS_SPH_DEG
     elseif (localfileformat == ESMF_FILEFORMAT_SHAPEFILE) then
-       ! Inquire totalpoints and total dims
-       ! -- this is a C routine using GDAL
-       ! -- -- this is also SLOPPY (<<>> MSL)
-       lFIDs => NULL()
-       gFIDs => NULL()
-       ! Godda run it once to get the number of features so we can allocate FIDs
-       call c_ESMC_GDAL_getnfeatures(trim(filename)//c_null_char, petNo, petCnt, nFeatures, locfeatures, maxid, minid, localrc)
-       print *, "getnfeatures: ", nFeatures, locfeatures
-       allocate(gFIDs(nFeatures))
 
-       if (petNo .eq. 0) then
-          call c_ESMC_GDAL_getglobal_fids(trim(filename)//c_null_char, nFeatures, gFIDs, localrc)
+       ! Read shapefile using GDAL - single-pass optimized coordinate extraction
+       ! Opens the file only twice total (count + read) instead of 4 times,
+       ! and iterates features only twice instead of 3 times.
+       ! For connectivity/network topology, use ESMF_LocStreamCreateFromShapefile()
+
+       ! Pass 1: Count local points only (allocate trivial arrays for rank match)
+       iCountOnly = 1
+       allocate(coordX(1), coordY(1))
+       call c_esmc_gdal_shpreadcoords(filename, PetNo, PetCnt, &
+            localpoints, totaldims, iCountOnly, coordX, coordY, localrc)
+       if (ESMF_LogFoundError(localrc, ESMF_ERR_PASSTHRU, &
+            ESMF_CONTEXT, rcToReturn=rc)) return
+       deallocate(coordX, coordY)
+
+       ! Set up dimensions
+       localcount = localpoints
+       totalpoints = localpoints  ! Will be used for LocStream creation
+       coordSys = ESMF_COORDSYS_SPH_RAD  ! c_esmc_gdal_shpreadcoords returns radians
+
+       ! Allocate coordinate arrays
+       allocate(coordX(localcount), coordY(localcount), imask(localcount))
+
+       ! Pass 2: Read coordinates into pre-allocated arrays
+       if (localcount > 0) then
+          iCountOnly = 0
+          call c_esmc_gdal_shpreadcoords(filename, PetNo, PetCnt, &
+               localpoints, totaldims, iCountOnly, coordX, coordY, localrc)
+          if (ESMF_LogFoundError(localrc, ESMF_ERR_PASSTHRU, &
+               ESMF_CONTEXT, rcToReturn=rc)) return
        endif
-       call ESMF_VMBroadcast(vm, bcstData=gFIDs, count=nFeatures, rootPet=0, rc=rc)
 
-       print *, 'gFIDs: ', petNo, gFIDs(1:3)
-
-       if (locFeatures .gt. 0) then
-          allocate(lFIDs(nFeatures)) ! This is local to this PET
-          call c_ESMC_GDAL_ShpInquire(trim(filename)//c_null_char, petNo, petCnt, localpoints, totaldims, nfeatures, gFIDs, locFeatures, lFIDs, localrc)
+       ! Set all points as valid (mask = 1)
+       imask(:) = 1
+       
+    endif
+    
+    ! Allocate coordinate arrays for non-shapefile formats
+    if (localfileformat /= ESMF_FILEFORMAT_SHAPEFILE) then
+       localcount = totalpoints/PetCnt
+       remain = totalpoints - (localcount*PetCnt)
+       if (PetNo < remain) then
+          localcount = localcount+1
+          starti = localcount*PetNo+1
+       else
+          starti = localcount*PetNo+1+remain
        endif
-       coordSys = ESMF_COORDSYS_SPH_RAD ! Fixed for now!
-       !if (localpoints .ge. 0)
-       totalpoints = nfeatures !localpoints
-       print *, "ShpInquire: ", localpoints, nfeatures, petNo, petCnt, lFIDs(1),lFIDs(locfeatures)
     endif
-
-    localcount = totalpoints/PetCnt
-    remain = totalpoints - (localcount*PetCnt)
-    if (PetNo < remain) then
-       localcount = localcount+1
-       starti = localcount*PetNo+1
-    else
-       starti = localcount*PetNo+1+remain
+    
+!    print *, "localcount locfeatures", localcount, locfeatures
+    
+    ! Shapefile path already allocated coordX/coordY/imask above
+    if (localfileformat /= ESMF_FILEFORMAT_SHAPEFILE) then
+       allocate(coordX(localcount), coordY(localcount),imask(localcount))
     endif
-
-    print *, "localcount locfeatures", localcount, locfeatures
-
-    allocate(coordX(localcount), coordY(localcount),imask(localcount))
+    
     if (localcount > 0) then 
        if (localfileformat == ESMF_FILEFORMAT_SCRIP) then 
           call ESMF_ScripGetVar(filename, grid_center_lon=coordX, grid_center_lat=coordY, &
@@ -2518,33 +2572,16 @@ contains
              enddo
              deallocate(varbuffer)
           endif
-       elseif (localfileformat == ESMF_FILEFORMAT_SHAPEFILE) then
-          ! Get X,Y coords
-          ! -- this is a C routine using GDAL
-
-          ! coords aren't governed by total points, rather GIS 'features'
-          ! 'features' are distributed, and then the points determined
-          if (associated(coordX)) deallocate(coordX)
-          if (associated(coordY)) deallocate(coordY)
-
-          ! localpoints is the number of points associated with this pet's features
-          allocate(coordX(localpoints),coordY(localpoints))
-          ! Here we get the coordinates from the features specified by nfeatures and lFIDs
-          call c_ESMC_GDAL_ShpGetCoords(trim(filename)//c_null_char, petNo, nfeatures, lFIDs, locfeatures, coordX, coordY, localrc)
-          if (ESMF_LogFoundError(localrc, ESMF_ERR_PASSTHRU, &
-               ESMF_CONTEXT, rcToReturn=rc)) return
-          !          localcount = localpoints
-          print *, "Got coords on pet ", petNo, localcount, localpoints
        endif
     endif
     ! create Location Stream
-    print *, 'before locstream: ', localcount, indexflagLocal, coordSys, trim(name)
+!    print *, 'before locstreamx: ', localpoints, indexflagLocal, coordSys, trim(name)
     locStream = ESMF_LocStreamCreate(name=name, localcount=localpoints, indexflag=indexflagLocal,&
          coordSys = coordSys, rc=localrc)
-    print *, "here 1", PetNo, localrc, starti, localcount, coordX(1), coordY(1)
+!    print *, "here 1", PetNo, localrc, starti, localpoints, coordX(1), coordY(1)
     if (ESMF_LogFoundError(localrc, ESMF_ERR_PASSTHRU, &
          ESMF_CONTEXT, rcToReturn=rc)) return
-    print *, "here 2", rc, localrc
+!    print *, "here 2", rc, localrc
 
     ! Add coordinate keys based on coordSys
     if ((coordSys == ESMF_COORDSYS_SPH_DEG) .or. (coordSys == ESMF_COORDSYS_SPH_RAD)) then 
@@ -2609,24 +2646,6 @@ contains
        if (ESMF_LogFoundError(localrc, ESMF_ERR_PASSTHRU, &
             ESMF_CONTEXT, rcToReturn=rc)) return
     endif
-
-    ! ====== MSL: Extract connectivity from polylines (AFTER LocStream created) ======
-#ifdef ESMF_GDAL
-    if (localfileformat == ESMF_FILEFORMAT_SHAPEFILE) then
-       print *, 'here 3', rc
-       if (present(extractConnectivity)) then
-          if (extractConnectivity) then
-             ! Extract node-edge connectivity from polyline geometry
-             call ExtractPolylineConnectivity(locStream, filename, &
-                  lFIDs, locFeatures, petNo, bidirectional, localrc)
-             if (ESMF_LogFoundError(localrc, ESMF_ERR_PASSTHRU, &
-                  ESMF_CONTEXT, rcToReturn=rc)) return
-          end if
-       end if
-       print *, 'here 4', rc
-    end if
-#endif
-    ! ==============================================================================
 
     ! local garbage collection
     deallocate(coordX, coordY, imask)
@@ -6274,456 +6293,6 @@ contains
 
 #endif
 
-  !------------------------------------------------------------------------------
-#undef ESMF_METHOD
-#define ESMF_METHOD "ExtractPolylineConnectivity"
-  !BOPI
-  ! !IROUTINE: ExtractPolylineConnectivity - Extract network edges from polylines
-  !
-  ! !INTERFACE:
-  subroutine ExtractPolylineConnectivity(locstream, filename, &
-       featureIDs, nFeatures, petNo, bidirectional, rc)
-    !
-    ! !ARGUMENTS:
-    type(ESMF_LocStream), intent(inout) :: locstream
-    character(len=*), intent(in) :: filename
-    integer(c_int), pointer, intent(in) :: featureIDs(:)
-    integer, intent(in) :: nFeatures
-    integer, intent(in) :: petNo
-    logical, intent(in), optional :: bidirectional
-    integer, intent(out) :: rc
-    !
-    ! !DESCRIPTION:
-    !   Extracts connectivity information from polyline shapefile.
-    !   For each polyline, creates nodes at vertices and edges between
-    !   consecutive vertices. Handles coordinate matching to identify junctions.
-    !
-    !EOPI
-    !------------------------------------------------------------------------------
-    type(ESMF_LocStreamType), pointer :: lstypep
-    integer :: localrc, i, j, ifeat, npts, str_i
-    integer(c_int) :: c_totalVertices, c_nFeatures
-    integer(c_int), allocatable :: vertexCounts(:), vertexOffsets(:)
-    real(c_double), allocatable :: all_coordX(:), all_coordY(:)
-    character(kind=c_char, len=1), allocatable :: c_filename(:)
-    integer :: node_count, edge_count, max_edges
-    real(ESMF_KIND_R8), pointer :: coordX(:), coordY(:)
-    type(ESMF_Array) :: xArray, yArray
-    integer, allocatable :: temp_src(:), temp_dst(:)
-    real(ESMF_KIND_R8), allocatable :: temp_len(:)
-    logical :: bidir
-    integer :: prev_node, curr_node
-    real(ESMF_KIND_R8), parameter :: tolerance = 1.0e-6
-    
-    ! Node merging variables
-    integer, allocatable :: node_mapping(:)
-    integer :: merged_node_count
-    real(ESMF_KIND_R8), parameter :: MERGE_TOLERANCE = 1.0e-8
-    integer :: orig_prev_node, orig_curr_node
-    
-    ! Boundary detection variables
-    integer :: edge_count_per_node, edge_idx_temp, boundary_count
-    
-    ! Edge deduplication variables
-    integer :: unique_count, e1, e2
-    logical, allocatable :: keep_edge(:)
-    
-    ! Haversine distance calculation variables
-    real(ESMF_KIND_R8) :: lon1, lat1, lon2, lat2
-    real(ESMF_KIND_R8) :: dlon, dlat, a, c
-
-    ! Initialize
-    localrc = ESMF_SUCCESS
-    rc = ESMF_RC_NOT_IMPL
-
-    print *, '===== ExtractPolylineConnectivity START on PET ', petNo, ' ====='
-    print *, 'DEBUG PET ', petNo, ': filename=', trim(filename)
-    print *, 'DEBUG PET ', petNo, ': nFeatures=', nFeatures
-    print *, 'DEBUG PET ', petNo, ': bidirectional present=', present(bidirectional)
-    if (present(bidirectional)) print *, 'DEBUG PET ', petNo, ': bidir value=', bidirectional
-
-    ! Get pointer to locstream
-    print *, 'DEBUG PET ', petNo, ': Getting locstream pointer...'
-    lstypep => locstream%lstypep
-    print *, 'DEBUG PET ', petNo, ': Got locstream pointer'
-
-    ! Set bidirectional parameter
-    if (present(bidirectional)) then
-       bidir = bidirectional
-    else
-       bidir = .true.
-    end if
-    print *, 'DEBUG PET ', petNo, ': bidir=', bidir
-
-    ! Get coordinate arrays
-    ! NOTE: Shapefiles use ESMF_COORDSYS_SPH_RAD, so keys are 'ESMF:Lon' and 'ESMF:Lat'
-    print *, 'DEBUG PET ', petNo, ': Getting Lon coordinate array...'
-    call ESMF_LocStreamGetKey(locstream, 'ESMF:Lon', xArray, rc=localrc)
-    print *, 'DEBUG PET ', petNo, ': GetKey Lon returned rc=', localrc
-    if (ESMF_LogFoundError(localrc, ESMF_ERR_PASSTHRU, &
-         ESMF_CONTEXT, rcToReturn=rc)) then
-       print *, 'ERROR PET ', petNo, ': Failed to get Lon key, rc=', localrc
-       return
-    end if
-    
-    print *, 'DEBUG PET ', petNo, ': Getting Lat coordinate array...'
-    call ESMF_LocStreamGetKey(locstream, 'ESMF:Lat', yArray, rc=localrc)
-    print *, 'DEBUG PET ', petNo, ': GetKey Lat returned rc=', localrc
-    if (ESMF_LogFoundError(localrc, ESMF_ERR_PASSTHRU, &
-         ESMF_CONTEXT, rcToReturn=rc)) then
-       print *, 'ERROR PET ', petNo, ': Failed to get Lat key, rc=', localrc
-       return
-    end if
-    
-    ! Then get pointers from Arrays
-    print *, 'DEBUG PET ', petNo, ': Getting Lon pointer from array...'
-    call ESMF_ArrayGet(xArray, farrayPtr=coordX, rc=localrc)
-    print *, 'DEBUG PET ', petNo, ': ArrayGet Lon returned rc=', localrc
-    if (ESMF_LogFoundError(localrc, ESMF_ERR_PASSTHRU, &
-         ESMF_CONTEXT, rcToReturn=rc)) then
-       print *, 'ERROR PET ', petNo, ': Failed to get Lon pointer, rc=', localrc
-       return
-    end if
-    
-    print *, 'DEBUG PET ', petNo, ': Getting Lat pointer from array...'
-    call ESMF_ArrayGet(yArray, farrayPtr=coordY, rc=localrc)
-    print *, 'DEBUG PET ', petNo, ': ArrayGet Lat returned rc=', localrc
-    if (ESMF_LogFoundError(localrc, ESMF_ERR_PASSTHRU, &
-         ESMF_CONTEXT, rcToReturn=rc)) then
-       print *, 'ERROR PET ', petNo, ': Failed to get Lat pointer, rc=', localrc
-       return
-    end if
-    
-    print *, 'DEBUG PET ', petNo, ': coordX size=', size(coordX)
-    print *, 'DEBUG PET ', petNo, ': coordY size=', size(coordY)
-
-    ! Estimate maximum edges (assume average 10 vertices per polyline)
-    max_edges = nFeatures * 10
-    if (bidir) max_edges = max_edges * 2
-    print *, 'DEBUG PET ', petNo, ': max_edges estimated=', max_edges
-
-    print *, 'DEBUG PET ', petNo, ': Allocating temp arrays...'
-    allocate(temp_src(max_edges))
-    allocate(temp_dst(max_edges))
-    allocate(temp_len(max_edges))
-    print *, 'DEBUG PET ', petNo, ': Temp arrays allocated'
-
-    node_count = size(coordX)
-    edge_count = 0
-    print *, 'DEBUG PET ', petNo, ': node_count=', node_count
-    print *, 'DEBUG PET ', petNo, ': edge_count initialized to 0'
-
-#ifdef ESMF_GDAL
-    print *, 'DEBUG PET ', petNo, ': Starting GDAL section'
-    ! Convert filename to C string
-    print *, 'DEBUG PET ', petNo, ': Converting filename to C string...'
-    allocate(c_filename(len_trim(filename)+2))
-    do str_i = 1, len_trim(filename)
-       c_filename(str_i) = filename(str_i:str_i)
-    end do
-    c_filename(len_trim(filename)+1) = c_null_char
-    print *, 'DEBUG PET ', petNo, ': Filename converted'
-
-    ! Count vertices
-    print *, 'DEBUG PET ', petNo, ': Allocating vertexCounts...'
-    allocate(vertexCounts(nFeatures))
-    c_nFeatures = int(nFeatures, c_int)
-    print *, 'DEBUG PET ', petNo, ': Calling CountPolylineVertices, nFeatures=', c_nFeatures
-
-    call c_ESMC_GDAL_CountPolylineVertices(c_filename, c_nFeatures, &
-         featureIDs, vertexCounts, &
-         c_totalVertices, localrc)
-    print *, 'DEBUG PET ', petNo, ': CountPolylineVertices returned rc=', localrc
-    print *, 'DEBUG PET ', petNo, ': c_totalVertices=', c_totalVertices
-    if (localrc /= ESMF_SUCCESS) then
-       print *, 'ERROR PET ', petNo, ': CountPolylineVertices failed!'
-       deallocate(c_filename, vertexCounts)
-       rc = ESMF_FAILURE
-       return
-    end if
-
-    ! Allocate arrays
-    print *, 'DEBUG PET ', petNo, ': Allocating coordinate arrays for ', c_totalVertices, ' vertices'
-    allocate(all_coordX(c_totalVertices))
-    allocate(all_coordY(c_totalVertices))
-    allocate(vertexOffsets(nFeatures + 1))
-    print *, 'DEBUG PET ', petNo, ': Arrays allocated'
-
-    ! Extract all vertices
-    print *, 'DEBUG PET ', petNo, ': Calling GetAllPolylineVertices...'
-    call c_ESMC_GDAL_GetAllPolylineVertices(c_filename, c_nFeatures, &
-         featureIDs, vertexOffsets, &
-         c_totalVertices, all_coordX, &
-         all_coordY, localrc)
-    print *, 'DEBUG PET ', petNo, ': GetAllPolylineVertices returned rc=', localrc
-    if (localrc /= ESMF_SUCCESS) then
-       print *, 'ERROR PET ', petNo, ': GetAllPolylineVertices failed!'
-       deallocate(c_filename, all_coordX, all_coordY, vertexCounts, vertexOffsets)
-       rc = ESMF_FAILURE
-       return
-    end if
-    print *, 'DEBUG PET ', petNo, ': First offset=', vertexOffsets(1)
-    if (c_totalVertices > 0) then
-       print *, 'DEBUG PET ', petNo, ': First vertex: (', all_coordX(1), ',', all_coordY(1), ')'
-    end if
-
-    !===========================================================================
-    ! MERGE COINCIDENT NODES
-    ! Build node_mapping array to identify which nodes should be merged
-    ! Note: We keep all original nodes, just remap edges to canonical nodes
-    !===========================================================================
-    allocate(node_mapping(node_count))
-    
-    ! Initially, each node maps to itself
-    do i = 1, node_count
-       node_mapping(i) = i
-    end do
-    
-    print *, 'DEBUG PET ', petNo, ': Merging coincident nodes (tolerance=', MERGE_TOLERANCE, ')...'
-    
-    ! Find and merge coincident nodes
-    ! This is O(n²) but necessary to detect junctions where polylines meet
-    do i = 1, node_count - 1
-       if (node_mapping(i) == i) then  ! Not yet merged
-          do j = i + 1, node_count
-             if (node_mapping(j) == j) then  ! Not yet merged
-                ! Check if nodes i and j are at the same location
-                if (abs(coordX(i) - coordX(j)) < MERGE_TOLERANCE .and. &
-                    abs(coordY(i) - coordY(j)) < MERGE_TOLERANCE) then
-                   ! Merge j into i (j now points to i as its canonical node)
-                   node_mapping(j) = i
-                end if
-             end if
-          end do
-       end if
-    end do
-    
-    ! Count unique nodes after merging (for statistics only)
-    merged_node_count = 0
-    do i = 1, node_count
-       if (node_mapping(i) == i) then
-          merged_node_count = merged_node_count + 1
-       end if
-    end do
-    
-    print *, 'DEBUG PET ', petNo, ': Original nodes:', node_count
-    print *, 'DEBUG PET ', petNo, ': Unique node locations:', merged_node_count
-    print *, 'DEBUG PET ', petNo, ': Duplicate nodes found:', node_count - merged_node_count
-    print *, 'DEBUG PET ', petNo, ': Node merging complete'
-    !===========================================================================
-
-    ! Process vertices
-    ! NOTE: Node IDs now use node_mapping to refer to canonical nodes for edges
-    print *, 'DEBUG PET ', petNo, ': Starting vertex processing, nFeatures=', nFeatures
-    do ifeat = 1, nFeatures
-       npts = vertexCounts(ifeat)
-       if (ifeat <= 3) then
-          print *, 'DEBUG PET ', petNo, ': Feature ', ifeat, ' has ', npts, ' vertices'
-          print *, 'DEBUG PET ', petNo, ': Offset=', vertexOffsets(ifeat)
-       end if
-
-       do j = 1, npts - 1
-          ! Get the original node indices for this edge
-          ! vertexOffsets(ifeat) is the starting index for this feature's vertices
-          orig_prev_node = vertexOffsets(ifeat) + j
-          orig_curr_node = vertexOffsets(ifeat) + j + 1
-          
-          ! Map to canonical node IDs (for coincident nodes)
-          prev_node = node_mapping(orig_prev_node)
-          curr_node = node_mapping(orig_curr_node)
-
-          if (ifeat <= 2 .and. j <= 2) then
-             print *, 'DEBUG PET ', petNo, ': Feature ', ifeat, ' edge ', j, ': orig nodes ', &
-                  orig_prev_node, ' -> ', orig_curr_node, ' | canonical nodes ', prev_node, ' -> ', curr_node
-          end if
-
-          ! Bounds check
-          if (prev_node < 1 .or. prev_node > node_count .or. &
-              curr_node < 1 .or. curr_node > node_count) then
-             print *, 'ERROR PET ', petNo, ': Node index out of bounds!'
-             print *, '  Feature ', ifeat, ', vertex ', j, ' of ', npts
-             print *, '  prev_node=', prev_node, ' curr_node=', curr_node, ' node_count=', node_count
-             print *, '  orig_prev_node=', orig_prev_node, ' orig_curr_node=', orig_curr_node
-             print *, '  vertexOffsets(ifeat)=', vertexOffsets(ifeat)
-             rc = ESMF_RC_ARG_SIZE
-             return
-          end if
-          
-          ! Skip self-loops (edges where source == destination after merging)
-          if (prev_node == curr_node) then
-             if (ifeat <= 10) then
-                print *, 'DEBUG PET ', petNo, ': Skipping self-loop at feature ', ifeat, ', vertex ', j
-             end if
-             cycle  ! Skip this edge
-          end if
-
-          edge_count = edge_count + 1
-          if (edge_count > max_edges) then
-             print *, 'ERROR PET ', petNo, ': edge_count ', edge_count, ' exceeds max_edges ', max_edges
-             rc = ESMF_RC_ARG_SIZE
-             return
-          end if
-          
-          temp_src(edge_count) = prev_node
-          temp_dst(edge_count) = curr_node
-          
-          ! Calculate great circle angular distance using Haversine formula
-          ! Coordinates are in RADIANS, result is angular distance in RADIANS
-          ! To convert to meters: distance_m = angular_distance_rad × R_earth
-          lon1 = coordX(prev_node)
-          lat1 = coordY(prev_node)
-          lon2 = coordX(curr_node)
-          lat2 = coordY(curr_node)
-          
-          dlon = lon2 - lon1
-          dlat = lat2 - lat1
-          
-          ! Haversine formula for angular distance
-          a = sin(dlat/2.0)**2 + cos(lat1) * cos(lat2) * sin(dlon/2.0)**2
-          c = 2.0 * atan2(sqrt(a), sqrt(1.0 - a))
-          
-          ! c is the angular distance in radians
-          temp_len(edge_count) = real(c, kind=4)
-
-          if (bidir) then
-             edge_count = edge_count + 1
-             if (edge_count > max_edges) then
-                print *, 'ERROR PET ', petNo, ': bidir edge_count ', edge_count, ' exceeds max_edges ', max_edges
-                rc = ESMF_RC_ARG_SIZE
-                return
-             end if
-             temp_src(edge_count) = curr_node
-             temp_dst(edge_count) = prev_node
-             temp_len(edge_count) = temp_len(edge_count-1)
-          end if
-       end do
-    end do
-
-    print *, 'DEBUG PET ', petNo, ': Finished processing vertices, edge_count=', edge_count
-    
-!NOPE   !===========================================================================
-!NOPE   ! DEDUPLICATE EDGES
-!NOPE   ! After node merging, multiple polyline features may trace the same physical
-!NOPE   ! segment, creating duplicate edges. Remove duplicates.
-!NOPE   !===========================================================================
-!NOPE   print *, 'DEBUG PET ', petNo, ': Deduplicating edges...'
-!NOPE   
-!NOPE   allocate(keep_edge(edge_count))
-!NOPE   keep_edge = .true.
-!NOPE   
-!NOPE   ! Mark duplicates
-!NOPE   do e1 = 1, edge_count - 1
-!NOPE      if (keep_edge(e1)) then
-!NOPE         do e2 = e1 + 1, edge_count
-!NOPE            if (keep_edge(e2)) then
-!NOPE               ! Check if e2 is duplicate of e1
-!NOPE               if (temp_src(e1) == temp_src(e2) .and. temp_dst(e1) == temp_dst(e2)) then
-!NOPE                  keep_edge(e2) = .false.
-!NOPE                   if (e1 <= 10 .or. e2 <= 10) then
-!NOPE                     print *, 'DEBUG PET ', petNo, ': Removing duplicate edge ', e2, &
-!NOPE                          ' (same as edge ', e1, '): ', temp_src(e2), ' -> ', temp_dst(e2)
-!NOPE                   end if
-!NOPE               end if
-!NOPE            end if
-!NOPE         end do
-!NOPE      end if
-!NOPE   end do
-!NOPE   
-!NOPE   ! Count unique edges
-!NOPE   unique_count = count(keep_edge)
-!NOPE   print *, 'DEBUG PET ', petNo, ': Original edges: ', edge_count
-!NOPE   print *, 'DEBUG PET ', petNo, ': Unique edges: ', unique_count
-!NOPE   print *, 'DEBUG PET ', petNo, ': Duplicates removed: ', edge_count - unique_count
-!NOPE   
-!NOPE   ! Compact arrays to remove duplicates
-!NOPE   if (unique_count < edge_count) then
-!NOPE      e2 = 0
-!NOPE      do e1 = 1, edge_count
-!NOPE         if (keep_edge(e1)) then
-!NOPE            e2 = e2 + 1
-!NOPE            if (e2 /= e1) then
-!NOPE               temp_src(e2) = temp_src(e1)
-!NOPE               temp_dst(e2) = temp_dst(e1)
-!NOPE               temp_len(e2) = temp_len(e1)
-!NOPE            end if
-!NOPE         end if
-!NOPE      end do
-!NOPE      edge_count = unique_count
-!NOPE   end if
-!NOPE   
-!NOPE   deallocate(keep_edge)
-!NOPE   print *, 'DEBUG PET ', petNo, ': Edge deduplication complete, final edge_count=', edge_count
-!NOPE   !===========================================================================
-    
-    deallocate(c_filename, all_coordX, all_coordY, vertexCounts, vertexOffsets)
-    deallocate(node_mapping)  ! Clean up merging array
-    print *, 'DEBUG PET ', petNo, ': GDAL arrays deallocated'
-#endif
-
-    ! Store connectivity in LocStream type
-    print *, 'DEBUG PET ', petNo, ': Storing connectivity in LocStream...'
-    lstypep%has_connectivity = .true.
-    lstypep%nedges = edge_count
-    print *, 'DEBUG PET ', petNo, ': Set has_connectivity=true, nedges=', edge_count
-
-    print *, 'DEBUG PET ', petNo, ': Allocating edge arrays...'
-    allocate(lstypep%edge_src(edge_count))
-    allocate(lstypep%edge_dst(edge_count))
-    allocate(lstypep%edge_length(edge_count))
-    print *, 'DEBUG PET ', petNo, ': Edge arrays allocated'
-
-    print *, 'DEBUG PET ', petNo, ': Copying edge data...'
-    lstypep%edge_src(1:edge_count) = temp_src(1:edge_count)
-    lstypep%edge_dst(1:edge_count) = temp_dst(1:edge_count)
-    lstypep%edge_length(1:edge_count) = temp_len(1:edge_count)
-    print *, 'DEBUG PET ', petNo, ': Edge data copied'
-
-    ! Build adjacency lists
-    print *, 'DEBUG PET ', petNo, ': Building adjacency lists...'
-    call BuildAdjacencyLists(lstypep, node_count, localrc)
-    print *, 'DEBUG PET ', petNo, ': BuildAdjacencyLists returned rc=', localrc
-    if (ESMF_LogFoundError(localrc, ESMF_ERR_PASSTHRU, &
-         ESMF_CONTEXT, rcToReturn=rc)) then
-       print *, 'ERROR PET ', petNo, ': BuildAdjacencyLists failed!'
-       return
-    end if
-
-    ! Detect boundary nodes (endpoints and junctions)
-    print *, 'DEBUG PET ', petNo, ': Detecting boundary nodes...'
-    allocate(lstypep%is_boundary(node_count))
-    
-    do i = 1, node_count
-       edge_count_per_node = 0
-       edge_idx_temp = lstypep%adj_head(i)
-       
-       do while (edge_idx_temp > 0)
-          edge_count_per_node = edge_count_per_node + 1
-          edge_idx_temp = lstypep%adj_next(edge_idx_temp)
-       end do
-       
-       ! Mark boundaries: nodes with 1 or 3+ edges
-       ! 0 edges: merged duplicate nodes (NOT boundaries)
-       ! 1 edge: endpoint/terminal (boundary)
-       ! 2 edges: internal/pass-through (NOT boundary)
-       ! 3+ edges: junction (boundary)
-       lstypep%is_boundary(i) = (edge_count_per_node == 1 .or. edge_count_per_node >= 3)
-    end do
-    
-    boundary_count = count(lstypep%is_boundary)
-    print *, 'DEBUG PET ', petNo, ': Detected', boundary_count, '/', node_count, &
-         'boundary nodes (', 100*boundary_count/node_count, '%)'
-
-    ! Cleanup
-    print *, 'DEBUG PET ', petNo, ': Cleaning up temp arrays...'
-    deallocate(temp_src, temp_dst, temp_len)
-    print *, 'DEBUG PET ', petNo, ': Temp arrays deallocated'
-
-    print *, 'DEBUG PET ', petNo, ': ExtractPolylineConnectivity SUCCESS'
-    rc = ESMF_SUCCESS
-
-  end subroutine ExtractPolylineConnectivity
-
-  !------------------------------------------------------------------------------
 #undef ESMF_METHOD
 #define ESMF_METHOD "BuildAdjacencyLists"
   !BOPI
@@ -6744,29 +6313,8 @@ contains
     !EOPI
     !------------------------------------------------------------------------------
     integer :: i, u
-    integer :: debug_unit
-    logical, parameter :: DEBUG_ADJLIST = .true.
-    character(len=256) :: debug_file
-    integer :: neighbor_count
 
     rc = ESMF_RC_NOT_IMPL
-
-    if (DEBUG_ADJLIST) then
-       write(debug_file, '(A)') 'esmf_build_adjacency_debug.txt'
-       open(newunit=debug_unit, file=trim(debug_file), status='replace', action='write')
-       write(debug_unit, '(A)') '========================================'
-       write(debug_unit, '(A)') 'BuildAdjacencyLists CALLED'
-       write(debug_unit, '(A,I0)') '  nnodes = ', nnodes
-       write(debug_unit, '(A,I0)') '  nedges = ', lstypep%nedges
-       write(debug_unit, *)
-       write(debug_unit, '(A)') 'All edges:'
-       do i = 1, lstypep%nedges
-          write(debug_unit, '(A,I0,A,I0,A,I0,A,ES15.7)') &
-               '  Edge ', i, ': src=', lstypep%edge_src(i), &
-               ' dst=', lstypep%edge_dst(i), ' len=', lstypep%edge_length(i)
-       end do
-       write(debug_unit, *)
-    end if
 
     ! Allocate adjacency arrays
     allocate(lstypep%adj_head(nnodes))
@@ -6776,44 +6324,12 @@ contains
     lstypep%adj_head = 0
     lstypep%adj_next = 0
 
-    if (DEBUG_ADJLIST) then
-       write(debug_unit, '(A)') 'Building adjacency lists (reverse order):'
-    end if
-
     ! Build lists (reverse order for correct linking)
     do i = lstypep%nedges, 1, -1
        u = lstypep%edge_src(i)
        lstypep%adj_next(i) = lstypep%adj_head(u)
        lstypep%adj_head(u) = i
-       
-       if (DEBUG_ADJLIST .and. (u == 1 .or. i <= 20)) then
-          write(debug_unit, '(A,I0,A,I0,A,I0,A,I0)') &
-               '  Edge ', i, ' (src=', u, '): adj_next(', i, ')=', lstypep%adj_next(i)
-          write(debug_unit, '(A,I0,A,I0)') &
-               '    adj_head(', u, ')=', i
-       end if
     end do
-
-    if (DEBUG_ADJLIST) then
-       write(debug_unit, *)
-       write(debug_unit, '(A)') 'Final adjacency lists for first 10 nodes:'
-       do u = 1, min(10, nnodes)
-          neighbor_count = 0
-          i = lstypep%adj_head(u)
-          write(debug_unit, '(A,I0,A,I0)') '  Node ', u, ': adj_head=', i
-          do while (i > 0)
-             neighbor_count = neighbor_count + 1
-             write(debug_unit, '(A,I0,A,I0,A,I0,A,I0)') &
-                  '    Neighbor ', neighbor_count, ': edge=', i, &
-                  ' dst=', lstypep%edge_dst(i), ' next=', lstypep%adj_next(i)
-             i = lstypep%adj_next(i)
-          end do
-          write(debug_unit, '(A,I0,A,I0)') '  Node ', u, ' has ', neighbor_count, ' neighbors'
-       end do
-       write(debug_unit, *)
-       write(debug_unit, '(A)') '========================================'
-       close(debug_unit)
-    end if
 
     rc = ESMF_SUCCESS
 
@@ -6855,60 +6371,16 @@ contains
     !------------------------------------------------------------------------------
     type(ESMF_LocStreamType), pointer :: lstypep
     integer :: localrc
-    integer :: debug_unit
-    logical, parameter :: DEBUG_CONNECTIVITY = .true.
-    character(len=256) :: debug_file
 
     localrc = ESMF_SUCCESS
     if (present(rc)) rc = ESMF_RC_NOT_IMPL
-
-    if (DEBUG_CONNECTIVITY) then
-       write(debug_file, '(A)') 'esmf_locstream_connectivity_debug.txt'
-       open(newunit=debug_unit, file=trim(debug_file), position='append', action='write')
-       write(debug_unit, '(A)') '========================================'
-       write(debug_unit, '(A)') 'ESMF_LocStreamGetConnectivity CALLED'
-       write(debug_unit, '(A)') '========================================'
-    end if
 
     ESMF_INIT_CHECK_DEEP(ESMF_LocStreamGetInit, locstream, rc)
 
     lstypep => locstream%lstypep
 
-    if (DEBUG_CONNECTIVITY) then
-       write(debug_unit, '(A,L1)') '  lstypep%has_connectivity = ', lstypep%has_connectivity
-       write(debug_unit, '(A,I0)') '  lstypep%nedges = ', lstypep%nedges
-       if (associated(lstypep%edge_src)) then
-          write(debug_unit, '(A,I0)') '  size(lstypep%edge_src) = ', size(lstypep%edge_src)
-       else
-          write(debug_unit, '(A)') '  lstypep%edge_src NOT ASSOCIATED'
-       end if
-       if (associated(lstypep%edge_dst)) then
-          write(debug_unit, '(A,I0)') '  size(lstypep%edge_dst) = ', size(lstypep%edge_dst)
-       else
-          write(debug_unit, '(A)') '  lstypep%edge_dst NOT ASSOCIATED'
-       end if
-       if (associated(lstypep%adj_head)) then
-          write(debug_unit, '(A,I0)') '  size(lstypep%adj_head) = ', size(lstypep%adj_head)
-       else
-          write(debug_unit, '(A)') '  lstypep%adj_head NOT ASSOCIATED'
-       end if
-    end if
-
     if (present(hasConnectivity)) hasConnectivity = lstypep%has_connectivity
     if (present(nedges)) nedges = lstypep%nedges
-
-    if (DEBUG_CONNECTIVITY) then
-       if (present(hasConnectivity)) then
-          write(debug_unit, '(A,L1)') '  OUTPUT hasConnectivity = ', hasConnectivity
-       end if
-       if (present(nedges)) then
-          write(debug_unit, '(A,I0)') '  OUTPUT nedges = ', nedges
-       end if
-       write(debug_unit, '(A,I0)') '  Return code = ', ESMF_SUCCESS
-       write(debug_unit, '(A)') '========================================'
-       write(debug_unit, *)
-       close(debug_unit)
-    end if
 
     if (present(rc)) rc = ESMF_SUCCESS
 
@@ -6955,37 +6427,15 @@ contains
     !------------------------------------------------------------------------------
     type(ESMF_LocStreamType), pointer :: lstypep
     integer :: localrc
-    integer :: debug_unit
-    logical, parameter :: DEBUG_EDGE = .true.
-    character(len=256) :: debug_file
 
     localrc = ESMF_SUCCESS
     if (present(rc)) rc = ESMF_RC_NOT_IMPL
-
-    if (DEBUG_EDGE) then
-       write(debug_file, '(A)') 'esmf_locstream_edge_debug.txt'
-       open(newunit=debug_unit, file=trim(debug_file), position='append', action='write')
-       write(debug_unit, '(A)') '========================================'
-       write(debug_unit, '(A)') 'ESMF_LocStreamGetEdge CALLED'
-       write(debug_unit, '(A,I0)') '  INPUT edgeId = ', edgeId
-    end if
 
     ESMF_INIT_CHECK_DEEP(ESMF_LocStreamGetInit, locstream, rc)
 
     lstypep => locstream%lstypep
 
-    if (DEBUG_EDGE) then
-       write(debug_unit, '(A,L1)') '  has_connectivity = ', lstypep%has_connectivity
-       write(debug_unit, '(A,I0)') '  nedges = ', lstypep%nedges
-    end if
-
     if (.not. lstypep%has_connectivity) then
-       if (DEBUG_EDGE) then
-          write(debug_unit, '(A)') '  ERROR: No connectivity information'
-          write(debug_unit, '(A)') '========================================'
-          write(debug_unit, *)
-          close(debug_unit)
-       end if
        call ESMF_LogSetError(ESMF_RC_ARG_WRONG, &
             msg="LocStream does not have connectivity information", &
             ESMF_CONTEXT, rcToReturn=rc)
@@ -6993,48 +6443,15 @@ contains
     end if
 
     if (edgeId < 1 .or. edgeId > lstypep%nedges) then
-       if (DEBUG_EDGE) then
-          write(debug_unit, '(A,I0,A,I0)') '  ERROR: edgeId ', edgeId, ' out of range [1,', lstypep%nedges, ']'
-          write(debug_unit, '(A)') '========================================'
-          write(debug_unit, *)
-          close(debug_unit)
-       end if
        call ESMF_LogSetError(ESMF_RC_ARG_OUTOFRANGE, &
             msg="edgeId out of range", &
             ESMF_CONTEXT, rcToReturn=rc)
        return
     end if
 
-    if (DEBUG_EDGE) then
-       if (associated(lstypep%edge_src)) then
-          write(debug_unit, '(A,I0)') '  edge_src(edgeId) = ', lstypep%edge_src(edgeId)
-       else
-          write(debug_unit, '(A)') '  edge_src NOT ASSOCIATED'
-       end if
-       if (associated(lstypep%edge_dst)) then
-          write(debug_unit, '(A,I0)') '  edge_dst(edgeId) = ', lstypep%edge_dst(edgeId)
-       else
-          write(debug_unit, '(A)') '  edge_dst NOT ASSOCIATED'
-       end if
-       if (associated(lstypep%edge_length)) then
-          write(debug_unit, '(A,ES15.7)') '  edge_length(edgeId) = ', lstypep%edge_length(edgeId)
-       else
-          write(debug_unit, '(A)') '  edge_length NOT ASSOCIATED'
-       end if
-    end if
-
     if (present(srcNode)) srcNode = lstypep%edge_src(edgeId)
     if (present(dstNode)) dstNode = lstypep%edge_dst(edgeId)
     if (present(length)) length = lstypep%edge_length(edgeId)
-
-    if (DEBUG_EDGE) then
-       if (present(srcNode)) write(debug_unit, '(A,I0)') '  OUTPUT srcNode = ', srcNode
-       if (present(dstNode)) write(debug_unit, '(A,I0)') '  OUTPUT dstNode = ', dstNode
-       if (present(length)) write(debug_unit, '(A,ES15.7)') '  OUTPUT length = ', length
-       write(debug_unit, '(A)') '========================================'
-       write(debug_unit, *)
-       close(debug_unit)
-    end if
 
     if (present(rc)) rc = ESMF_SUCCESS
 
@@ -7088,45 +6505,15 @@ contains
     integer :: localrc, e, count, i
     integer, allocatable :: temp_neighbors(:), temp_edges(:)
     real(ESMF_KIND_R8), allocatable :: temp_distances(:)
-    integer :: debug_unit
-    logical, parameter :: DEBUG_NEIGHBORS = .true.
-    character(len=256) :: debug_file
 
     localrc = ESMF_SUCCESS
     if (present(rc)) rc = ESMF_RC_NOT_IMPL
-
-    if (DEBUG_NEIGHBORS) then
-       write(debug_file, '(A)') 'esmf_locstream_neighbors_debug.txt'
-       open(newunit=debug_unit, file=trim(debug_file), position='append', action='write')
-       write(debug_unit, '(A)') '========================================'
-       write(debug_unit, '(A)') 'ESMF_LocStreamGetNeighbors CALLED'
-       write(debug_unit, '(A,I0)') '  INPUT nodeId = ', nodeId
-    end if
 
     ESMF_INIT_CHECK_DEEP(ESMF_LocStreamGetInit, locstream, rc)
 
     lstypep => locstream%lstypep
 
-    if (DEBUG_NEIGHBORS) then
-       write(debug_unit, '(A,L1)') '  has_connectivity = ', lstypep%has_connectivity
-       write(debug_unit, '(A,I0)') '  nedges = ', lstypep%nedges
-       if (associated(lstypep%adj_head)) then
-          write(debug_unit, '(A,I0)') '  size(adj_head) = ', size(lstypep%adj_head)
-          if (nodeId >= 1 .and. nodeId <= size(lstypep%adj_head)) then
-             write(debug_unit, '(A,I0,A,I0)') '  adj_head(', nodeId, ') = ', lstypep%adj_head(nodeId)
-          end if
-       else
-          write(debug_unit, '(A)') '  adj_head NOT ASSOCIATED'
-       end if
-    end if
-
     if (.not. lstypep%has_connectivity) then
-       if (DEBUG_NEIGHBORS) then
-          write(debug_unit, '(A)') '  ERROR: No connectivity'
-          write(debug_unit, '(A)') '========================================'
-          write(debug_unit, *)
-          close(debug_unit)
-       end if
        call ESMF_LogSetError(ESMF_RC_ARG_WRONG, &
             msg="LocStream does not have connectivity information", &
             ESMF_CONTEXT, rcToReturn=rc)
@@ -7136,35 +6523,14 @@ contains
     ! Count neighbors
     count = 0
     e = lstypep%adj_head(nodeId)
-    
-    if (DEBUG_NEIGHBORS) then
-       write(debug_unit, '(A)') '  Traversing adjacency list:'
-       write(debug_unit, '(A,I0)') '    Starting edge e = ', e
-    end if
-    
     do while (e > 0)
        count = count + 1
-       if (DEBUG_NEIGHBORS .and. count <= 10) then
-          write(debug_unit, '(A,I0,A,I0,A,I0,A,I0)') &
-               '    [', count, '] edge=', e, ' src=', lstypep%edge_src(e), &
-               ' dst=', lstypep%edge_dst(e)
-       end if
        e = lstypep%adj_next(e)
     end do
-
-    if (DEBUG_NEIGHBORS) then
-       write(debug_unit, '(A,I0)') '  Total neighbor count = ', count
-    end if
 
     if (present(nNeighbors)) nNeighbors = count
 
     if (count == 0) then
-       if (DEBUG_NEIGHBORS) then
-          write(debug_unit, '(A)') '  No neighbors found'
-          write(debug_unit, '(A)') '========================================'
-          write(debug_unit, *)
-          close(debug_unit)
-       end if
        if (present(rc)) rc = ESMF_SUCCESS
        return
     end if
@@ -7182,11 +6548,6 @@ contains
        temp_neighbors(i) = lstypep%edge_dst(e)
        temp_edges(i) = e
        temp_distances(i) = lstypep%edge_length(e)
-       if (DEBUG_NEIGHBORS .and. i <= 10) then
-          write(debug_unit, '(A,I0,A,I0,A,I0,A,ES15.7)') &
-               '  Neighbor[', i, ']: node=', temp_neighbors(i), &
-               ' edge=', temp_edges(i), ' dist=', temp_distances(i)
-       end if
        e = lstypep%adj_next(e)
     end do
 
@@ -7207,13 +6568,6 @@ contains
     end if
 
     deallocate(temp_neighbors, temp_edges, temp_distances)
-
-    if (DEBUG_NEIGHBORS) then
-       write(debug_unit, '(A)') '  Arrays returned successfully'
-       write(debug_unit, '(A)') '========================================'
-       write(debug_unit, *)
-       close(debug_unit)
-    end if
 
     if (present(rc)) rc = ESMF_SUCCESS
 
@@ -7256,41 +6610,15 @@ contains
     !------------------------------------------------------------------------------
     type(ESMF_LocStreamType), pointer :: lstypep
     integer :: localrc, i
-    integer :: debug_unit
-    logical, parameter :: DEBUG_BOUNDARY = .true.
-    character(len=256) :: debug_file
 
     localrc = ESMF_SUCCESS
     if (present(rc)) rc = ESMF_RC_NOT_IMPL
-
-    if (DEBUG_BOUNDARY) then
-       write(debug_file, '(A)') 'esmf_locstream_boundary_debug.txt'
-       open(newunit=debug_unit, file=trim(debug_file), position='append', action='write')
-       write(debug_unit, '(A)') '========================================'
-       write(debug_unit, '(A)') 'ESMF_LocStreamGetBoundaryFlags CALLED'
-    end if
 
     ESMF_INIT_CHECK_DEEP(ESMF_LocStreamGetInit, locstream, rc)
 
     lstypep => locstream%lstypep
 
-    if (DEBUG_BOUNDARY) then
-       write(debug_unit, '(A,L1)') '  has_connectivity = ', lstypep%has_connectivity
-       if (associated(lstypep%is_boundary)) then
-          write(debug_unit, '(A,I0)') '  size(is_boundary) = ', size(lstypep%is_boundary)
-          write(debug_unit, '(A,I0)') '  count(is_boundary) = ', count(lstypep%is_boundary)
-       else
-          write(debug_unit, '(A)') '  is_boundary NOT ASSOCIATED'
-       end if
-    end if
-
     if (.not. lstypep%has_connectivity) then
-       if (DEBUG_BOUNDARY) then
-          write(debug_unit, '(A)') '  ERROR: No connectivity'
-          write(debug_unit, '(A)') '========================================'
-          write(debug_unit, *)
-          close(debug_unit)
-       end if
        call ESMF_LogSetError(ESMF_RC_ARG_WRONG, &
             msg="LocStream does not have connectivity information", &
             ESMF_CONTEXT, rcToReturn=rc)
@@ -7298,12 +6626,6 @@ contains
     end if
 
     if (.not. associated(lstypep%is_boundary)) then
-       if (DEBUG_BOUNDARY) then
-          write(debug_unit, '(A)') '  ERROR: No boundary information'
-          write(debug_unit, '(A)') '========================================'
-          write(debug_unit, *)
-          close(debug_unit)
-       end if
        call ESMF_LogSetError(ESMF_RC_ARG_WRONG, &
             msg="LocStream does not have boundary information", &
             ESMF_CONTEXT, rcToReturn=rc)
@@ -7316,15 +6638,6 @@ contains
 
     if (present(nBoundary)) then
        nBoundary = count(lstypep%is_boundary)
-       if (DEBUG_BOUNDARY) then
-          write(debug_unit, '(A,I0)') '  OUTPUT nBoundary = ', nBoundary
-       end if
-    end if
-
-    if (DEBUG_BOUNDARY) then
-       write(debug_unit, '(A)') '========================================'
-       write(debug_unit, *)
-       close(debug_unit)
     end if
 
     if (present(rc)) rc = ESMF_SUCCESS
@@ -7375,37 +6688,15 @@ contains
     integer :: localrc, i, old_nedges, new_nedges
     integer, allocatable :: new_edge_src(:), new_edge_dst(:)
     real(ESMF_KIND_R8), allocatable :: new_edge_length(:)
-    integer :: debug_unit
-    logical, parameter :: DEBUG_GHOST = .true.
-    character(len=256) :: debug_file
 
     localrc = ESMF_SUCCESS
     if (present(rc)) rc = ESMF_RC_NOT_IMPL
-
-    if (DEBUG_GHOST) then
-       write(debug_file, '(A)') 'esmf_locstream_ghost_debug.txt'
-       open(newunit=debug_unit, file=trim(debug_file), position='append', action='write')
-       write(debug_unit, '(A)') '========================================'
-       write(debug_unit, '(A)') 'ESMF_LocStreamAddGhostEdges CALLED'
-       write(debug_unit, '(A,I0)') '  INPUT nGhosts = ', nGhosts
-    end if
 
     ESMF_INIT_CHECK_DEEP(ESMF_LocStreamGetInit, locstream, rc)
 
     lstypep => locstream%lstypep
 
-    if (DEBUG_GHOST) then
-       write(debug_unit, '(A,L1)') '  has_connectivity = ', lstypep%has_connectivity
-       write(debug_unit, '(A,I0)') '  Current nedges = ', lstypep%nedges
-    end if
-
     if (.not. lstypep%has_connectivity) then
-       if (DEBUG_GHOST) then
-          write(debug_unit, '(A)') '  ERROR: No connectivity'
-          write(debug_unit, '(A)') '========================================'
-          write(debug_unit, *)
-          close(debug_unit)
-       end if
        call ESMF_LogSetError(ESMF_RC_ARG_WRONG, &
             msg="LocStream does not have connectivity information", &
             ESMF_CONTEXT, rcToReturn=rc)
@@ -7413,12 +6704,6 @@ contains
     end if
 
     if (nGhosts <= 0) then
-       if (DEBUG_GHOST) then
-          write(debug_unit, '(A)') '  nGhosts <= 0, nothing to add'
-          write(debug_unit, '(A)') '========================================'
-          write(debug_unit, *)
-          close(debug_unit)
-       end if
        if (present(rc)) rc = ESMF_SUCCESS
        return
     end if
@@ -7426,26 +6711,6 @@ contains
     ! Get current edge count
     old_nedges = lstypep%nedges
     new_nedges = old_nedges + nGhosts
-
-    if (DEBUG_GHOST) then
-       write(debug_unit, '(A,I0)') '  old_nedges = ', old_nedges
-       write(debug_unit, '(A,I0)') '  new_nedges = ', new_nedges
-       write(debug_unit, '(A)') '  Ghost edges to add:'
-       do i = 1, min(10, nGhosts)
-          if (present(ghostLength)) then
-             write(debug_unit, '(A,I0,A,I0,A,I0,A,ES15.7)') &
-                  '    [', i, '] src=', ghostSrc(i), ' dst=', ghostDst(i), &
-                  ' len=', ghostLength(i)
-          else
-             write(debug_unit, '(A,I0,A,I0,A,I0,A)') &
-                  '    [', i, '] src=', ghostSrc(i), ' dst=', ghostDst(i), &
-                  ' len=0.0 (default)'
-          end if
-       end do
-       if (nGhosts > 10) then
-          write(debug_unit, '(A,I0,A)') '    ... (', nGhosts-10, ' more)'
-       end if
-    end if
 
     ! Allocate new edge arrays
     allocate(new_edge_src(new_nedges))
@@ -7481,16 +6746,477 @@ contains
 
     deallocate(new_edge_src, new_edge_dst, new_edge_length)
 
-    if (DEBUG_GHOST) then
-       write(debug_unit, '(A)') '  Ghost edges added successfully'
-       write(debug_unit, '(A,I0)') '  Final nedges = ', lstypep%nedges
-       write(debug_unit, '(A)') '========================================'
-       write(debug_unit, *)
-       close(debug_unit)
-    end if
-
     if (present(rc)) rc = ESMF_SUCCESS
 
   end subroutine ESMF_LocStreamAddGhostEdges
 
+  !==============================================================================
+  ! ESMF LocStream ParMETIS Data Getter Routine
+  !==============================================================================
+  
+  subroutine ESMF_LocStreamGetParmetisData(locstream, nodedist, xadj, adjncy, &
+       node_x, node_y, nnodes, nedges, rc)
+    type(ESMF_LocStream), intent(in) :: locstream
+    integer, pointer, intent(out) :: nodedist(:)
+    integer, pointer, intent(out) :: xadj(:)
+    integer, pointer, intent(out) :: adjncy(:)
+    real(ESMF_KIND_R8), pointer, intent(out) :: node_x(:)
+    real(ESMF_KIND_R8), pointer, intent(out) :: node_y(:)
+    integer, intent(out) :: nnodes
+    integer, intent(out) :: nedges
+    integer, intent(out) :: rc
+
+    ! Local variables
+    type(ESMF_LocStreamType), pointer :: lstypep
+
+    rc = ESMF_SUCCESS
+
+    ! Get internal LocStream structure
+    lstypep => locstream%lstypep
+
+    if (.not. lstypep%has_connectivity) then
+       write(*,*) 'ERROR: Failed to get LocStream internal structure'
+       return
+    endif
+
+    ! Check if ParMETIS data exists
+    if (.not. associated(lstypep%parmetis_nodedist)) then
+       write(*,*) 'ERROR: LocStream does not contain ParMETIS data'
+       rc = ESMF_FAILURE
+       return
+    endif
+
+    ! Return pointers to the stored ParMETIS data
+    nodedist => lstypep%parmetis_nodedist
+    xadj => lstypep%parmetis_xadj
+    adjncy => lstypep%parmetis_adjncy
+    node_x => lstypep%parmetis_node_x
+    node_y => lstypep%parmetis_node_y
+    nnodes = lstypep%parmetis_nnodes
+    nedges = lstypep%parmetis_nedges
+
+  end subroutine ESMF_LocStreamGetParmetisData
+
+  !------------------------------------------------------------------------------
+#undef  ESMF_METHOD
+#define ESMF_METHOD "ESMF_LocStreamCreateFromParmetis"
+  !BOP
+  ! !IROUTINE: ESMF_LocStreamCreate - Create LocStream from shapefile with ParMETIS
+  !\label{locstream:createfromshapefile}
+  ! !INTERFACE:
+  ! Private name: call using ESMF_LocStreamCreate()
+  function ESMF_LocStreamCreateFromParmetis(filename, keywordEnforcer, &
+       extractConnectivity, bidirectional, indexflag, name, rc)
+    !
+    ! !RETURN VALUE:
+    type(ESMF_LocStream) :: ESMF_LocStreamCreateFromParmetis
+    !
+    ! !ARGUMENTS:
+    character(len=*),           intent(in)            :: filename
+    type(ESMF_KeywordEnforcer), optional              :: keywordEnforcer ! must use keywords below
+    logical,                    intent(in)            :: extractConnectivity
+    logical,                    intent(in)            :: bidirectional
+    type(ESMF_Index_Flag),      intent(in), optional  :: indexflag
+    character(len=*),           intent(in), optional  :: name
+    integer,                    intent(out), optional :: rc
+    !
+    ! !DESCRIPTION:
+    !     Create a new {\tt ESMF\_LocStream} object from a shapefile with network
+    !     topology support using ParMETIS for distributed graph partitioning.
+    !     This function reads a shapefile containing linear network features 
+    !     (e.g., road networks, river networks) and creates a distributed LocStream
+    !     with connectivity information stored in ParMETIS CSR format.
+    !
+    !     The function automatically:
+    !     \begin{itemize}
+    !     \item Reads the shapefile geometry and topology
+    !     \item Merges nodes at endpoints using coordinate tolerance
+    !     \item Distributes the graph across MPI ranks using ParMETIS format
+    !     \item Stores node coordinates and adjacency information
+    !     \item Optionally creates bidirectional edges
+    !     \end{itemize}
+    !
+    !     The arguments are:
+    !     \begin{description}
+    !     \item[filename]
+    !          Path to the shapefile (.shp) to be loaded.
+    !     \item[{[extractConnectivity]}]
+    !          If .TRUE., extract and store network connectivity information.
+    !          If .FALSE., only store node coordinates without topology.
+    !          Default is .TRUE.
+    !     \item[{[bidirectional]}]
+    !          If .TRUE., create edges in both directions (A->B and B->A).
+    !          If .FALSE., create only directed edges as specified in the shapefile.
+    !          Only used if extractConnectivity is .TRUE.
+    !          Default is .FALSE.
+    !     \item[{[indexflag]}]
+    !          Flag that indicates how the DE-local indices are to be defined.
+    !          Defaults to {\tt ESMF\_INDEX\_DELOCAL}, which indicates
+    !          that the index range on each DE starts at 1.
+    !     \item[{[name]}]
+    !          Name of the location stream.
+    !     \item[{[extractConnectivity]}]
+    !          For polyline shapefiles, extract connectivity information from 
+    !          sequential vertices. This creates node-edge relationships suitable
+    !          for network analysis and routing. Defaults to .FALSE.
+    !     \item[{[bidirectional]}]
+    !          For network edges, create bidirectional connections (both forward
+    !          and reverse edges). Defaults to .TRUE.
+    !     \item[{[rc]}]
+    !          Return code; equals {\tt ESMF\_SUCCESS} if there are no errors.
+    !     \end{description}
+    !
+    !EOP
+    !------------------------------------------------------------------------------
+    ! Local variables
+    type(ESMF_LocStream)        :: locStream
+    type(ESMF_LocStreamType), pointer :: lstypep
+    type(ESMF_VM)               :: vm
+    type(ESMF_Index_Flag)       :: indexflagLocal
+    type(ESMF_CoordSys_Flag)    :: coordSys
+    integer                     :: localrc
+    integer                     :: PetNo, PetCnt
+    integer                     :: localcount, totalpoints
+    logical                     :: localExtractConn, localBidirectional
+
+    ! Coordinate and mask arrays
+    real(ESMF_KIND_R8), allocatable :: coordX(:), coordY(:)
+    integer, allocatable            :: imask(:)
+
+    ! ParMETIS data structures
+#ifdef ESMF_GDAL
+    type(c_ptr) :: nodedist_ptr, xadj_ptr, adjncy_ptr, node_x_ptr, node_y_ptr
+    integer(c_int32_t), pointer :: nodedist(:), xadj(:), adjncy(:)
+    real(c_double), pointer :: node_x(:), node_y(:)
+    integer(c_int) :: nnodes, nedges
+    integer :: c_ierr
+    character(kind=c_char, len=256) :: c_filename
+    integer :: mpi_comm
+    real(c_double) :: tol_val
+
+    ! Edge construction
+    integer :: i, j, edge_local
+    integer :: my_node_start, my_node_end, boundary_count
+#endif
+
+    ! Initialize return code
+    if (present(rc)) rc = ESMF_RC_NOT_IMPL
+
+#ifdef ESMF_GDAL
+
+    ! Set default values
+!    if (present(extractConnectivity)) then
+       localExtractConn = extractConnectivity
+!    else
+!       localExtractConn = .true.
+!    endif
+
+!    if (present(bidirectional)) then
+       localBidirectional = bidirectional
+!    else
+!       localBidirectional = .false.
+!    endif
+
+    if (present(indexflag)) then
+       indexflagLocal = indexflag
+    else
+       indexflagLocal = ESMF_INDEX_DELOCAL
+    endif
+
+    ! Get VM information
+    call ESMF_VMGetCurrent(vm, rc=localrc)
+    if (ESMF_LogFoundError(localrc, ESMF_ERR_PASSTHRU, &
+         ESMF_CONTEXT, rcToReturn=rc)) return
+
+    call ESMF_VMGet(vm, localPet=PetNo, petCount=PetCnt, rc=localrc)
+    if (ESMF_LogFoundError(localrc, ESMF_ERR_PASSTHRU, &
+         ESMF_CONTEXT, rcToReturn=rc)) return
+
+    ! Get MPI communicator for ParMETIS
+    call ESMF_VMGet(vm, mpiCommunicator=mpi_comm, rc=localrc)
+    if (ESMF_LogFoundError(localrc, ESMF_ERR_PASSTHRU, &
+         ESMF_CONTEXT, rcToReturn=rc)) return
+
+    ! Set coordinate tolerance for node merging (1e-6 degrees)
+    tol_val = 1.0d-6
+
+    ! Prepare C-compatible filename
+    c_filename = trim(filename) // C_NULL_CHAR
+
+    ! Call C function to read shapefile and build distributed ParMETIS graph
+    call shapefile_to_parmetis_graph_f(c_filename, mpi_comm, &
+         nodedist_ptr, xadj_ptr, adjncy_ptr, node_x_ptr, node_y_ptr, &
+         nnodes, nedges, tol_val, c_ierr)
+
+    if (c_ierr /= 0) then
+       call ESMF_LogSetError(rcToCheck=ESMF_FAILURE, &
+            msg="Failed to read shapefile and build ParMETIS graph", &
+            ESMF_CONTEXT, rcToReturn=rc)
+       return
+    endif
+    
+!XX    ! ========== DEBUG: ParMETIS data received from C ==========
+!XX    print *, '=========================================='
+!XX    print *, 'DEBUG Rank', PetNo, ': ParMETIS data from shapefile_to_parmetis_graph_f'
+!XX    print *, '  nnodes (local):', nnodes
+!XX    print *, '  nedges (local):', nedges
+!XX    print *, '=========================================='
+
+    ! Convert C pointers to Fortran pointers
+    call c_f_pointer(nodedist_ptr, nodedist, [PetCnt+1])
+    call c_f_pointer(node_x_ptr, node_x, [nnodes])
+    call c_f_pointer(node_y_ptr, node_y, [nnodes])
+    call c_f_pointer(xadj_ptr, xadj, [nnodes+1])
+    call c_f_pointer(adjncy_ptr, adjncy, [nedges])
+    
+!XX    ! ========== DEBUG: nodedist array ==========
+!XX    print *, '=========================================='
+!XX    print *, 'DEBUG Rank', PetNo, ': nodedist array (node distribution across PEs)'
+!XX    do i = 1, PetCnt
+!XX       print *, '  PE', i-1, 'owns nodes', nodedist(i), 'to', nodedist(i+1)-1, &
+!XX            '(', nodedist(i+1) - nodedist(i), 'nodes)'
+!XX    end do
+!XX    print *, '  Total nodes in graph:', nodedist(PetCnt+1)
+!XX    print *, '=========================================='
+!XX    
+!XX    ! ========== DEBUG: xadj array (CSR row pointers) ==========
+!XX    print *, '=========================================='
+!XX    print *, 'DEBUG Rank', PetNo, ': xadj array (CSR format - edge start indices)'
+!XX    print *, '  xadj size:', nnodes+1
+!XX    print *, '  First 5 entries:'
+!XX    do i = 1, min(5, int(nnodes))
+!XX       print *, '    Node', i-1, ': xadj(', i, ')=', xadj(i), ', num_edges=', &
+!XX            xadj(i+1) - xadj(i)
+!XX    end do
+!XX    print *, '  Last entry: xadj(', nnodes+1, ')=', xadj(nnodes+1)
+!XX    print *, '=========================================='
+!XX    
+!XX    ! ========== DEBUG: adjncy array (CSR column indices / neighbor IDs) ==========
+!XX    print *, '=========================================='
+!XX    print *, 'DEBUG Rank', PetNo, ': adjncy array (destination node IDs - 0-based)'
+!XX    print *, '  adjncy size:', nedges
+!XX    print *, '  First 10 entries (if available):'
+!XX    do i = 1, min(10, int(nedges))
+!XX       print *, '    adjncy(', i, ') =', adjncy(i), '  (0-based, add 1 for global ID)'
+!XX    end do
+!XX    print *, '=========================================='
+!XX    
+!XX    ! ========== DEBUG: Analyze adjncy for cross-PE edges ==========
+!XX    print *, '=========================================='
+!XX    print *, 'DEBUG Rank', PetNo, ': Analyzing adjncy for cross-PE edges'
+!XX    my_node_start = int(nodedist(PetNo+1))
+!XX    my_node_end = int(nodedist(PetNo+2)) - 1
+!XX    print *, '  My node range (0-based):', my_node_start, 'to', my_node_end
+!XX    print *, '  My node range (1-based):', my_node_start+1, 'to', my_node_end+1
+!XX    
+!XX    boundary_count = 0
+!XX    do i = 1, int(nedges)
+!XX       ! Check if destination is outside my range
+!XX       if ((adjncy(i) < my_node_start) .or. (adjncy(i) > my_node_end)) then
+!XX          boundary_count = boundary_count + 1
+!XX          if (boundary_count <= 5) then
+!XX             print *, '  Boundary edge', boundary_count, ': dst=', adjncy(i), &
+!XX                  '(0-based) =', adjncy(i)+1, '(1-based) - OUTSIDE my range'
+!XX          end if
+!XX       end if
+!XX    end do
+!XX    print *, '  Total boundary edges detected in adjncy:', boundary_count
+!XX    print *, '=========================================='
+
+    ! Set up dimensions
+    localcount = int(nnodes)
+    totalpoints = int(nodedist(PetCnt+1))
+    coordSys = ESMF_COORDSYS_SPH_DEG
+
+    ! Allocate and fill coordinate arrays
+    allocate(coordX(localcount), coordY(localcount), imask(localcount))
+    coordX(1:localcount) = node_x(1:localcount)
+    coordY(1:localcount) = node_y(1:localcount)
+    imask(:) = 1  ! All nodes are valid (mask = 1)
+
+    ! Create the LocStream with local node count
+    locStream = ESMF_LocStreamCreate(name=name, localcount=localcount, &
+         indexflag=indexflagLocal, coordSys=coordSys, rc=localrc)
+    if (ESMF_LogFoundError(localrc, ESMF_ERR_PASSTHRU, &
+         ESMF_CONTEXT, rcToReturn=rc)) return
+
+    ! Add coordinate keys (Longitude and Latitude)
+    call ESMF_LocStreamAddKey(locStream, 'ESMF:Lon', coordX, &
+         keyUnits='degrees', keyLongName='Longitude', &
+         datacopyflag=ESMF_DATACOPY_VALUE, rc=localrc)
+    if (ESMF_LogFoundError(localrc, ESMF_ERR_PASSTHRU, &
+         ESMF_CONTEXT, rcToReturn=rc)) return
+
+    call ESMF_LocStreamAddKey(locStream, 'ESMF:Lat', coordY, &
+         keyUnits='degrees', keyLongName='Latitude', &
+         datacopyflag=ESMF_DATACOPY_VALUE, rc=localrc)
+    if (ESMF_LogFoundError(localrc, ESMF_ERR_PASSTHRU, &
+         ESMF_CONTEXT, rcToReturn=rc)) return
+
+    ! Add mask key
+    call ESMF_LocStreamAddKey(locStream, 'ESMF:Mask', imask, &
+         keyLongName='Mask', datacopyflag=ESMF_DATACOPY_VALUE, rc=localrc)
+    if (ESMF_LogFoundError(localrc, ESMF_ERR_PASSTHRU, &
+         ESMF_CONTEXT, rcToReturn=rc)) return
+
+    ! Clean up temporary arrays
+    deallocate(coordX, coordY, imask)
+
+    ! Store ParMETIS data in LocStream if connectivity extraction is requested
+    if (localExtractConn) then
+       lstypep => locStream%lstypep
+
+       ! Mark that this LocStream has connectivity
+       lstypep%has_connectivity = .true.
+       lstypep%nedges = int(nedges)
+
+       ! Store ParMETIS data structure
+       lstypep%parmetis_nnodes = int(nnodes)
+       lstypep%parmetis_nedges = int(nedges)
+
+       ! Allocate and copy nodedist
+       allocate(lstypep%parmetis_nodedist(PetCnt+1))
+       lstypep%parmetis_nodedist = nodedist
+
+       ! Allocate and copy xadj (CSR row pointers)
+       allocate(lstypep%parmetis_xadj(nnodes+1))
+       lstypep%parmetis_xadj = xadj
+
+       ! Allocate and copy adjncy (CSR column indices)
+       allocate(lstypep%parmetis_adjncy(nedges))
+       lstypep%parmetis_adjncy = adjncy
+
+       ! Allocate and copy node coordinates
+       allocate(lstypep%parmetis_node_x(nnodes))
+       lstypep%parmetis_node_x = node_x
+
+       allocate(lstypep%parmetis_node_y(nnodes))
+       lstypep%parmetis_node_y = node_y
+
+       ! Build edge arrays from CSR format
+       allocate(lstypep%edge_src(nedges))
+       allocate(lstypep%edge_dst(nedges))
+       allocate(lstypep%edge_length(nedges))
+       allocate(lstypep%is_boundary(nedges))
+
+       ! Compute global node ID range for this PE
+       my_node_start = int(nodedist(PetNo+1))
+       my_node_end = int(nodedist(PetNo+2)) - 1
+       
+!XX       ! ========== DEBUG: Node ownership range ==========
+!XX       print *, '=========================================='
+!XX       print *, 'DEBUG Rank', PetNo, ': Node ownership range'
+!XX       print *, '  my_node_start (0-based) =', my_node_start
+!XX       print *, '  my_node_end (0-based) =', my_node_end
+!XX       print *, '  Number of nodes owned =', my_node_end - my_node_start + 1
+!XX       print *, '  Global IDs (1-based): ', my_node_start+1, 'to', my_node_end+1
+!XX       print *, '=========================================='
+
+       ! Convert CSR format to edge list
+       edge_local = 0
+       
+!XX       ! ========== DEBUG: Edge construction ==========
+!XX       print *, '=========================================='
+!XX       print *, 'DEBUG Rank', PetNo, ': Converting CSR to edge list'
+!XX       print *, '  Processing', nnodes, 'local nodes'
+!XX       print *, '  Expected total edges:', nedges
+!XX       print *, '=========================================='
+       
+       boundary_count = 0
+       do i = 0, int(nnodes)-1
+          ! Debug first few nodes
+!XX          if (i < 3) then
+!XX             print *, '----------------------------------------'
+!XX             print *, 'DEBUG Rank', PetNo, ': Node i=', i
+!XX             print *, '  Global node ID (1-based):', my_node_start + i + 1
+!XX             print *, '  xadj(', i+1, ')=', xadj(i+1), ', xadj(', i+2, ')=', xadj(i+2)
+!XX             print *, '  Number of edges:', xadj(i+2) - xadj(i+1)
+!XX          end if
+          
+          do j = int(xadj(i+1)), int(xadj(i+2))-1
+             edge_local = edge_local + 1
+
+             ! Source node (global 1-based ID)
+             lstypep%edge_src(edge_local) = my_node_start + i + 1
+
+             ! Destination node (global 1-based ID)
+             lstypep%edge_dst(edge_local) = int(adjncy(j+1)) + 1
+
+             ! Check if boundary edge (destination on different rank)
+             lstypep%is_boundary(edge_local) = &
+                  (lstypep%edge_dst(edge_local) < my_node_start + 1) .or. &
+                  (lstypep%edge_dst(edge_local) > my_node_end + 1)
+             
+             ! Debug first few edges of first few nodes
+!XX             if (i < 3) then
+!XX                print *, '  Edge', edge_local, ': src=', lstypep%edge_src(edge_local), &
+!XX                     ' -> dst=', lstypep%edge_dst(edge_local), &
+!XX                     ' boundary=', lstypep%is_boundary(edge_local)
+!XX             end if
+             
+             ! Count boundary edges
+             if (lstypep%is_boundary(edge_local)) then
+                boundary_count = boundary_count + 1
+             end if
+
+             ! Edge length (initialize to zero, can be computed from coordinates later)
+             lstypep%edge_length(edge_local) = 0.0_ESMF_KIND_R8
+          enddo
+       enddo
+       
+!XX       ! ========== DEBUG: Edge construction results ==========
+!XX       print *, '=========================================='
+!XX       print *, 'DEBUG Rank', PetNo, ': Edge construction complete'
+!XX       print *, '  Total edges created:', edge_local
+!XX       print *, '  Expected edges:', nedges
+!XX       print *, '  Boundary edges:', boundary_count
+!XX       print *, '  Local edges:', edge_local - boundary_count
+!XX       if (edge_local /= nedges) then
+!XX          print *, '  *** WARNING: Edge count mismatch! ***'
+!XX       end if
+!XX       print *, '=========================================='
+!XX       if (PetNo == 0) then
+!XX          print *, '================================================================'
+!XX          print *, 'ParMETIS LocStream Created from Shapefile:'
+!XX          print *, '  Filename: ', trim(filename)
+!XX          print *, '  Total nodes: ', totalpoints
+!XX          print *, '  Local nodes (rank 0): ', nnodes
+!XX          print *, '  Local edges (rank 0): ', nedges
+!XX          print *, '  Boundary edges (rank 0): ', boundary_count
+!XX          print *, '  Extract connectivity: ', localExtractConn
+!XX          print *, '  Bidirectional: ', localBidirectional
+!XX          print *, '================================================================'
+!XX       endif
+!XX       
+!XX       ! ========== DEBUG: Verify sample edges stored in LocStream ==========
+!XX       print *, '=========================================='
+!XX       print *, 'DEBUG Rank', PetNo, ': Sample edges stored in LocStream'
+!XX       do i = 1, min(10, lstypep%nedges)
+!XX          print *, '  Edge', i, ': src=', lstypep%edge_src(i), &
+!XX               ' -> dst=', lstypep%edge_dst(i), &
+!XX               ' boundary=', lstypep%is_boundary(i)
+!XX       end do
+!XX       print *, '=========================================='
+    endif
+
+    ! Free C-allocated memory for the raw arrays
+    ! (We've copied the data to Fortran arrays in the LocStream structure)
+    call free_parmetis_graph_f(nodedist_ptr, xadj_ptr, adjncy_ptr, &
+         node_x_ptr, node_y_ptr)
+
+    ! Set return value
+    ESMF_LocStreamCreateFromParmetis = locStream
+
+    ! Success
+    if (present(rc)) rc = ESMF_SUCCESS
+
+#else
+    ! GDAL not available
+    call ESMF_LogSetError(rcToCheck=ESMF_RC_LIB_NOT_PRESENT, &
+         msg="ESMF not compiled with GDAL support - shapefile reading unavailable", &
+         ESMF_CONTEXT, rcToReturn=rc)
+    if (present(rc)) rc = ESMF_RC_LIB_NOT_PRESENT
+#endif
+
+  end function ESMF_LocStreamCreateFromParmetis
 end module ESMF_LocStreamMod

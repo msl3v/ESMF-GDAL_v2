@@ -1,1 +1,1 @@
-ESMCI_LocStream_F_v0.3.C
+ESMCI_LocStream_F_v0.4.C
