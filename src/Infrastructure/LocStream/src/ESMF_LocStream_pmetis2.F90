@@ -2522,7 +2522,7 @@ contains
        endif
     endif
     
-    print *, "localcount locfeatures", localcount, locfeatures
+!    print *, "localcount locfeatures", localcount, locfeatures
     
     allocate(coordX(localcount), coordY(localcount),imask(localcount))
     
@@ -2588,13 +2588,13 @@ contains
        endif
     endif
     ! create Location Stream
-    print *, 'before locstream: ', localcount, indexflagLocal, coordSys, trim(name)
+!    print *, 'before locstreamx: ', localpoints, indexflagLocal, coordSys, trim(name)
     locStream = ESMF_LocStreamCreate(name=name, localcount=localpoints, indexflag=indexflagLocal,&
          coordSys = coordSys, rc=localrc)
-    print *, "here 1", PetNo, localrc, starti, localcount, coordX(1), coordY(1)
+!    print *, "here 1", PetNo, localrc, starti, localpoints, coordX(1), coordY(1)
     if (ESMF_LogFoundError(localrc, ESMF_ERR_PASSTHRU, &
          ESMF_CONTEXT, rcToReturn=rc)) return
-    print *, "here 2", rc, localrc
+!    print *, "here 2", rc, localrc
 
     ! Add coordinate keys based on coordSys
     if ((coordSys == ESMF_COORDSYS_SPH_DEG) .or. (coordSys == ESMF_COORDSYS_SPH_RAD)) then 

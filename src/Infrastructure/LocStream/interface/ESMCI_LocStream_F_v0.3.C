@@ -92,7 +92,7 @@ extern "C" {
 
     *locfeatures = *max_id-*min_id+1;
 
-    printf("--- nFeatures: %d\n", *nfeatures);
+    //    printf("--- nFeatures: %d\n", *nfeatures);
 
     // Cleanup
     GDALClose( hDS );
@@ -327,7 +327,9 @@ extern "C" {
       printf("WARNING on PET %d: No coordinates extracted from shapefile\n", *local_pet);
     }
 
-    printf("NOTE: ASSUMING DEG. CONVERTING TO RADIANS!!!\n");
+	if (*local_pet == 0) {
+	  printf("NOTE: FOR SHAPEFILE, ASSUMING DEG. CONVERTING TO RADIANS!!!\n");
+	}
     int numCoords = XCoords.size();
     for (int i = 0; i < numCoords; i++) {
       coordX[i] = XCoords[i] * ESMC_CoordSys_Deg2Rad;
