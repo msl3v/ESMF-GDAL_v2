@@ -2320,7 +2320,7 @@ contains
     type(ESMF_LocStreamType), pointer :: lstypep
     integer :: edge_local, my_node_start, my_node_end, boundary_count
     !-- Timing (disable by commenting out the SHPTIMING define below) --
-#define SHPTIMING
+!#define SHPTIMING
 #ifdef SHPTIMING
     real(ESMF_KIND_R8) :: shpt_t0, shpt_count, shpt_alloc
     real(ESMF_KIND_R8) :: shpt_read, shpt_create, shpt_addlon, shpt_addlat

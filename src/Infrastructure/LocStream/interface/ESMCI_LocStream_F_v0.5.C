@@ -362,7 +362,7 @@ extern "C" {
    *=========================================================================*/
 
 /* Define to enable timing output, comment out to disable */
-#define SHPREAD_TIMING
+//#define SHPREAD_TIMING
 
 #ifdef SHPREAD_TIMING
 #include <time.h>
