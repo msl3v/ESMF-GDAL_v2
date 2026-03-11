@@ -63,8 +63,9 @@ program ESMF_IO_GDALUTest
 !  character(len=*), parameter :: shapefileName = "data/esmf_3x3_multimesh.shp"
 !  character(len=*), parameter :: shapefileName = "data/esmf_3x3_mesh.shp"
 !  character(len=*), parameter :: shapefileName = "data/cb_2018_us_region_20m.shp"
-  character(len=*), parameter :: shapefileName = "data/cb_2018_us_county_20m.shp"
-!  character(len=*), parameter :: shapefileName = "data/test3_simple.shp"
+!  character(len=*), parameter :: shapefileName = "/home/ilcentro/Work/NASA/ALI/GDAL/cb_2018_us_county_20m.shp"
+!  character(len=*), parameter :: shapefileName = "/home/ilcentro/Work/NASA/ALI/GDAL/triangle_square_tiny.shp"
+  character(len=*), parameter :: shapefileName = "/home/ilcentro/Work/NASA/ALI/data/CROSSWALK/oilandgas_21_2024_multipolygon.shp"
 
   ! NetCDF stuff
   integer :: ncid, xdimid, ydimid, xvarid, yvarid, varid, dimids

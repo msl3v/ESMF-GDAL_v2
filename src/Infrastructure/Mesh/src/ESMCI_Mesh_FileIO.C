@@ -1370,7 +1370,12 @@ void ESMCI_mesh_create_from_SHAPEFILE_file(char *filename,
     int nFeatures;
     int *globalFeature_IDs=NULL;
     ESMCI_GDAL_SHP_get_feature_info(hDS, &nFeatures, globalFeature_IDs);
-
+    if (nFeatures < 0 || globalFeature_IDs == NULL) {
+      // handle error: unsupported layer or allocation failure
+      ESMC_LogDefault.MsgFoundError(ESMC_RC_FILE_READ,
+	    "Could not determine feature count from shapefile layer.", ESMC_CONTEXT, &localrc);
+      return;
+    }
 
 
     // Get positions at which to read element information
@@ -1384,9 +1389,17 @@ void ESMCI_mesh_create_from_SHAPEFILE_file(char *filename,
       num_features=feature_ids_vec.size(); // local to this pet
       feature_IDs   = (int *)malloc(num_features*sizeof(int));
       for (int i=0; i<num_features; i++) {
-	feature_IDs[i] = globalFeature_IDs[feature_ids_vec[i]-1];
+	int idx = feature_ids_vec[i] - 1;  // convert 1-based to 0-based
+	if (idx < 0 || idx >= nFeatures) {
+	  // handle error: index out of range
+	  ESMC_LogDefault.MsgFoundError(ESMC_RC_ARG_VALUE,
+		"Feature index out of range.", ESMC_CONTEXT, &localrc);
+	  free(feature_IDs);
+	  return;
+	}
+	feature_IDs[i] = globalFeature_IDs[idx];	
+//	feature_IDs[i] = globalFeature_IDs[feature_ids_vec[i]-1];
       }
-//      feature_IDs=&feature_ids_vec[0];
     } 
 
     // Processes polygons in hDS. Polygons are flattened to 2D
@@ -1396,11 +1409,11 @@ void ESMCI_mesh_create_from_SHAPEFILE_file(char *filename,
 					     &totNumElemConn, &num_nodes, &num_elems);
 
 
-    node_IDs=&nodeIDs[0];
-    elem_Conn=&elemConn[0];
-    elem_Coords=&elemCoords[0];
-    num_ElemConn=&numElemConn[0];
-    num_elems = num_features;
+    node_IDs     = nodeIDs.data();
+    elem_Conn    = elemConn.data();
+    elem_Coords  = elemCoords.data();
+    num_ElemConn = numElemConn.data();
+    num_elems    = num_features;
 
     // Convert global elem info into node info
 
