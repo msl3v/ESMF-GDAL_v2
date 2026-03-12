@@ -395,7 +395,7 @@ extern "C" {
 #define SHPREAD_INIT_CAP  65536
 #define SHPREAD_GROW(cap) ((cap) + ((cap) >> 1))  /* 1.5x growth */
 
-  void c_esmc_gdal_shpreadcoords_c(
+  void FTN_X(c_esmc_gdal_shpreadcoords)(
                                          const char *filename,
                                          int *local_pet,
                                          int *pet_count,
