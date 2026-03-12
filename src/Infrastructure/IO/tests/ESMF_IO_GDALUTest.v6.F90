@@ -145,7 +145,7 @@ program ESMF_IO_GDALUTest
 
   Meshfield = ESMF_FieldCreate( Mesh, &
                                 arraySpec, &
-                                name="DE", &
+                                name="co2", &
 !                                name="nhgis0003_", &
                                 meshLoc=ESMF_MESHLOC_ELEMENT, &
                                 rc=rc)
@@ -155,6 +155,8 @@ program ESMF_IO_GDALUTest
     write(*,*) 'Failed at Mesh FieldCreate'
     return
   endif
+
+  call ESMF_FieldRead( Meshfield, fileName=trim(shapefilename), iofmt=ESMF_IOFMT_SHP, rc=RC)
 
   !------------------------------------------------------------------------
   ! 4a. Access the field pointers and give them some data
