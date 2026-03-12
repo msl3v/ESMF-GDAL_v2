@@ -1666,6 +1666,10 @@ int GDAL_IODescHandler::constructGdalDecomp(
       gdalDofList = (MPI_Offset *)NULL;
       return localrc;
     }
+    printf("gdalDofCount %d, gdalDofList: ", gdalDofCount);
+    for (int i = 0; i < gdalDofCount; i++)
+      printf("%lld ", (long long)gdalDofList[i]);
+    printf("\n");
   }
 
 #if 0

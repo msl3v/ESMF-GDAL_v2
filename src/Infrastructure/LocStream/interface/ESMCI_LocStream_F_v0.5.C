@@ -458,9 +458,11 @@ extern "C" {
 
     int do_count_only = *count_only;
 
+#ifdef SHPREAD_TIMING
     SHPREAD_TIMER_MARK(_t0)
     _t_open = _t0 - _t_total;
-
+#endif
+    
     // Use sequential access: reset reading, skip to our start feature
     OGR_L_ResetReading(hLayer);
 
@@ -475,10 +477,12 @@ extern "C" {
       }
     }
 
+#ifdef SHPREAD_TIMING
     SHPREAD_TIMER_MARK(_t1)
     _t_seek = _t1 - _t0;
     SHPREAD_TIMER_MARK(_t0)
-
+#endif
+      
     int point_count = 0;
     GIntBig my_feature_count = my_end - my_start;
 
@@ -544,9 +548,11 @@ extern "C" {
       OGR_F_Destroy(hFeature);
     }
 
+#ifdef SHPREAD_TIMING
     SHPREAD_TIMER_MARK(_t1)
     _t_loop = _t1 - _t0;
-
+#endif
+    
     if (point_count == 0) {
       printf("WARNING on PET %d: No coordinates extracted from shapefile\n",
              *local_pet);
