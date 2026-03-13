@@ -396,17 +396,17 @@ module ESMF_LocStreamMod
       type(c_ptr), value, intent(in) :: nodedist, xadj, adjncy, node_x, node_y
     end subroutine
 
-    subroutine c_esmc_gdal_shpreadcoords(filename, local_pet, pet_count, &
-         localpoints, totaldims, cx_ptr, cy_ptr, rc) &
-         bind(C, name="c_esmc_gdal_shpreadcoords_c")
-      use iso_c_binding
-      character(kind=c_char), dimension(*), intent(in) :: filename
-      integer(c_int), intent(in)  :: local_pet, pet_count
-      integer(c_int), intent(out) :: localpoints, totaldims
-      type(c_ptr), intent(out)    :: cx_ptr, cy_ptr
-      integer(c_int), intent(out) :: rc
-    end subroutine
-
+!    subroutine c_esmc_gdal_shpreadcoords(filename, local_pet, pet_count, &
+!         localpoints, totaldims, cx_ptr, cy_ptr, rc) &
+!         bind(C, name="c_esmc_gdal_shpreadcoords")
+!      use iso_c_binding
+!      character(kind=c_char), dimension(*), intent(in) :: filename
+!      integer(c_int), intent(in)  :: local_pet, pet_count
+!      integer(c_int), intent(out) :: localpoints, totaldims
+!      type(c_ptr), intent(out)    :: cx_ptr, cy_ptr
+!      integer(c_int), intent(out) :: rc
+!    end subroutine
+!
     subroutine c_esmc_gdal_shpfreecoords(cx_ptr, cy_ptr) &
          bind(C, name="c_esmc_gdal_shpfreecoords_c")
       use iso_c_binding

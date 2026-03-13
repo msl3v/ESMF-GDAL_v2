@@ -815,6 +815,17 @@ void ESMCI_meshaddelements(Mesh **meshpp,
        }
     }
 
+    // --- DIAG BLOCK 1: Input summary ---
+    printf("DIAG1 %d# num_elems=%d parametric_dim=%d num_elemConn=%d\n",
+           Par::Rank(), num_elems, parametric_dim, num_elemConn);
+    for (int i=0; i< num_elems; i++) {
+      printf("DIAG1 %d# elem[%d]: id=%d elemType=%d\n",
+             Par::Rank(), i, elemId[i], elemType[i]);
+    }
+    if (_elemConn_size != NULL) {
+      printf("DIAG1 %d# _elemConn_size=%d\n", Par::Rank(), *_elemConn_size);
+    }
+
     /// If size of array is available, make sure it matches
     if (_elemConn_size != NULL) {
       if (*_elemConn_size != num_elemConn) {
@@ -924,6 +935,10 @@ void ESMCI_meshaddelements(Mesh **meshpp,
       mesh.is_split=false;
     }
 
+    // --- DIAG BLOCK 2: Split decision ---
+    printf("DIAG2 %d# is_split_local=%d mesh.is_split=%d num_extra_elem=%d\n",
+           Par::Rank(), (int)is_split_local, (int)mesh.is_split, num_extra_elem);
+
     // Compute the extra element ranges
     int beg_extra_ids=0;
     if (mesh.is_split) {
@@ -953,6 +968,11 @@ void ESMCI_meshaddelements(Mesh **meshpp,
       beg_extra_ids=beg_extra_ids+global_max_id+1;
 
       // printf("%d# beg_extra_ids=%d end=%d\n",Par::Rank(),beg_extra_ids,beg_extra_ids+num_extra_elem-1);
+
+      // --- DIAG BLOCK 3: Split ID range ---
+      printf("DIAG3 %d# beg_extra_ids=%d num_extra_elem=%d end=%d max_non_split_id=%d\n",
+             Par::Rank(), beg_extra_ids, num_extra_elem,
+             beg_extra_ids+num_extra_elem-1, mesh.max_non_split_id);
     }
 
 #if 0
@@ -1293,6 +1313,12 @@ void ESMCI_meshaddelements(Mesh **meshpp,
       }
     }
 
+    // --- DIAG BLOCK 4: Final element list ---
+    printf("DIAG4 %d# num_elems_final=%d (after split)\n", Par::Rank(), num_elems);
+    for (int e = 0; e < num_elems; ++e) {
+      printf("DIAG4 %d# final_elem[%d]: id=%d type=%d\n",
+             Par::Rank(), e, elemId[e], elemType[e]);
+    }
 
     // Now loop the elements and add them to the mesh.
     int cur_conn = 0;
