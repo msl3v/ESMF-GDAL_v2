@@ -1331,18 +1331,22 @@ void ESMCI_mesh_create_from_SHAPEFILE_file(char *filename,
     //   printf("In shapefile method filename=%s\n",filename);
     // }
 
-  // Open file and create datasource (DS)
+  // Open file and create datasource (DS).
+    // Every PET must open the file independently. The previous code only
+    // opened hDS when access() succeeded and only threw on PET 0 otherwise,
+    // leaving hDS uninitialised on all other PETs — causing shapefile_distributed
+    // to receive a garbage handle, return immediately with empty vectors, and
+    // then pass NULL as elemType into meshaddelements -> SIGSEGV at Glue:810.
+    OGRRegisterAll(); // register all the drivers (idempotent)
     OGRDataSourceH hDS;
-    if (access(filename, F_OK) == 0) {
-      OGRRegisterAll(); // register all the drivers
-      hDS = OGROpen( filename, FALSE, NULL );
-      if( hDS == NULL )
-	{
-	  printf( "Open failed on pet %d: %s, %d\n", local_pet, CPLGetLastErrorMsg(), CPLGetLastErrorNo() );
-	  Throw();
-	}
-    } else if (local_pet == 0) {
-      printf("Cannot access shapefile\n");
+    if (access(filename, F_OK) != 0) {
+      printf("PET %d: Cannot access shapefile: %s\n", local_pet, filename);
+      Throw();
+    }
+    hDS = OGROpen(filename, FALSE, NULL);
+    if (hDS == NULL) {
+      printf("PET %d: OGROpen failed: %s (errno %d)\n",
+             local_pet, CPLGetLastErrorMsg(), CPLGetLastErrorNo());
       Throw();
     }
 
@@ -1351,7 +1355,7 @@ void ESMCI_mesh_create_from_SHAPEFILE_file(char *filename,
     ESMCI_GDAL_SHP_get_dim_from_file(hDS, filename, dim);
 
     // Get shapefile params
-    int num_nodes;
+    int num_nodes=0;  // must be initialized: shapefile_distributed may return early
     int num_elems=0;
     int totNumElemConn=0;
     double *nodeCoords=NULL;
@@ -1402,6 +1406,7 @@ void ESMCI_mesh_create_from_SHAPEFILE_file(char *filename,
       }
     } 
 
+    printf("PE %d: nFeatures %d\n",local_pet,num_features);
     // Processes polygons in hDS. Polygons are flattened to 2D
     ESMCI_GDAL_process_shapefile_distributed(hDS,&num_features,feature_IDs,globalFeature_IDs,
 					     nodeCoords,nodeIDs,elemIDs,
@@ -1415,11 +1420,18 @@ void ESMCI_mesh_create_from_SHAPEFILE_file(char *filename,
     num_ElemConn = numElemConn.data();
     num_elems    = num_features;
 
-    // Convert global elem info into node info
-
-    int *local_elem_conn=NULL;
-    convert_global_elem_conn_to_local_node_and_elem_info(num_elems, totNumElemConn, num_ElemConn, elem_Conn,
-                                                          num_nodes, node_IDs, local_elem_conn);
+    // shapefile_distributed already assigns 1-based sequential local node IDs
+    // (conn=[1,2,3,4], [5,6,7,8], ...) so no global->local remapping is needed.
+    // convert_global_elem_conn_to_local_node_and_elem_info is designed for the
+    // NetCDF paths where global IDs must be remapped; calling it here produces
+    // a broken local_elem_conn and a wrong num_nodes. Instead, copy elem_Conn
+    // directly as the local connectivity.
+    int *local_elem_conn = NULL;
+    if (totNumElemConn > 0) {
+      local_elem_conn = new int[totNumElemConn];
+      for (int i = 0; i < totNumElemConn; i++)
+        local_elem_conn[i] = elem_Conn[i];
+    }
 
     int sumElemConn=0;
     for(std::vector<int>::iterator it = numElemConn.begin(); it != numElemConn.end(); ++it)

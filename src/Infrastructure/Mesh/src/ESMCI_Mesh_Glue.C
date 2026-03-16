@@ -805,7 +805,9 @@ void ESMCI_meshaddelements(Mesh **meshpp,
     //// Calc size of connectivity list
     int num_elemConn=0;
     if (parametric_dim==2) {
+      printf("%d# wtf1 %d\n",Par::Rank(),num_elems);
       for (int i=0; i< num_elems; i++) {
+	printf("%d# wtf2: %d, %d\n",Par::Rank(),i,elemType[i]);
         num_elemConn += elemType[i];
       }
     } else if (parametric_dim==3) {
