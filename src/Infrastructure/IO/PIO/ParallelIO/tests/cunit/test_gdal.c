@@ -28,19 +28,11 @@
  * are using three-dimensional data. */
 #define NDIM 1
 
-/* But sometimes we need arrays of the non-record dimensions. */
-#define NDIM2 2
-
 /* The length of our sample data along each dimension. */
 #define X_DIM_LEN 2
-#define Y_DIM_LEN 4
 
 /* The number of timesteps of data to write. */
 #define NUM_TIMESTEPS 2
-
-/* The names of variables in the netCDF output files. */
-#define VAR_NAME "Billy-Bob"
-#define VAR_NAME2 "Sally-Sue"
 
 /* Test cases relating.*/
 /* currently only shapefile read. No write yet */
@@ -49,12 +41,6 @@
 /* Test with and without specifying a fill value to
  * PIOc_write_darray(). */
 #define NUM_TEST_CASES_FILLVALUE 2
-
-/* The dimension names. */
-//char dim_name[NDIM][PIO_MAX_NAME + 1] = {"timestep", "x", "y"};
-
-/* Length of the dimensions in the sample data. */
-//int dim_len[NDIM] = {NC_UNLIMITED, X_DIM_LEN, Y_DIM_LEN};
 
 /* Create a 1D decomposition.
  *
@@ -72,17 +58,19 @@ int create_decomposition_1d(int ntasks, int my_rank, int iosysid, int *ioid, int
     int dim_len_1d[NDIM] = {X_DIM_LEN};
     int ret;
 
-    /* How many data elements per task? In this example we will end up
-     * with 2. */
-    elements_per_pe = X_DIM_LEN / ntasks;
-
+    /* How many data elements per task? */
+    // elements_per_pe = X_DIM_LEN / ntasks; Default to 1.
+    // elements_per_pe = (X_DIM_LEN / ntasks < 1) ? 1 : X_DIM_LEN / ntasks;
+    elements_per_pe = 1;               // each rank owns 0 or 1 feature
+    
     PIO_Offset compdof[elements_per_pe];
 
-    /* Don't forget to add 1! */
-    compdof[0] = my_rank + 1;
-
-    /* This means fill value will be used here. */
-    compdof[1] = 0;
+    compdof[0] = (my_rank < X_DIM_LEN) ? my_rank + 1 : 0;
+//    /* Don't forget to add 1! */
+//    compdof[0] = my_rank + 1;
+//
+//    /* This means fill value will be used here. */
+//    compdof[1] = 0;
 
     /* Create the PIO decomposition for this test. */
     if ((ret = PIOc_InitDecomp(iosysid, pio_type, NDIM, dim_len_1d, elements_per_pe,
@@ -93,9 +81,8 @@ int create_decomposition_1d(int ntasks, int my_rank, int iosysid, int *ioid, int
 }
 
 /**
- * Test the darray functionality. Create a netCDF file with 3
- * dimensions and 1 PIO_INT variable, and use darray to write some
- * data.
+ * Test the GDAL interface functionality.
+ * Open an existing shapefile and read a field.
  *
  * @param iosysid the IO system ID.
  * @param ioid the ID of the decomposition.
@@ -110,25 +97,24 @@ int test_gdal(int iosysid, int ioid, int num_flavors, int *flavor, int my_rank,
 {
     char filename[PIO_MAX_NAME + 1]; /* Name for the output files. */
     int dimids[NDIM];      /* The dimension IDs. */
-    int ncid;      /* The ncid of the netCDF file. */
-    int ncid2;     /* The ncid of the re-opened netCDF file. */
-    int varid;     /* The ID of the netCDF varable. */
-    int varid2;     /* The ID of a netCDF varable of different type. */
+    int shpid;     /* The id of the shapefile. */
+    int varid;     /* The ID of the shapefile field. */
     int wrong_varid = TEST_VAL_42;  /* A wrong ID. */
     int ret;       /* Return code. */
     MPI_Datatype mpi_type;
     int type_size; /* size of a variable of type pio_type */
     int other_type; /* another variable of the same size but different type */
-    PIO_Offset arraylen = 8;
+    PIO_Offset arraylen = 1;
     void *fillvalue, *ofillvalue;
-    void *test_data;
+    void *test_data = NULL;
     int fillvalue_int = NC_FILL_INT;
-    int test_data_int[]={366, 677};
+    int test_data_int[arraylen];
     float fillvalue_float = NC_FILL_FLOAT;
-    float test_data_float[]={366., 677.};
+    float test_data_float[arraylen];
     double fillvalue_double = NC_FILL_DOUBLE;
-    double test_data_double[]={366., 677.};
+    double test_data_double[arraylen];
     int iotype = PIO_IOTYPE_GDAL;
+    float expected_data[2] = {366.,677.};
 
     GDALDatasetH hDSp;
 
@@ -138,16 +124,13 @@ int test_gdal(int iosysid, int ioid, int num_flavors, int *flavor, int my_rank,
 	switch (pio_type)
 	  {
 	  case PIO_INT:
-	    test_data = test_data_int;
-	    //	      test_data_in = test_data_int;
+	    test_data = (void *)&test_data_int;
 	    break;
 	  case PIO_FLOAT:
-	    test_data = test_data_float;
-	    //	      test_data_in = test_data_float;
+	    test_data = (void *)&test_data_float;
 	    break;
 	  case PIO_DOUBLE:
-	    test_data = test_data_double;
-	    //	      test_data_in = test_data_double;
+	    test_data = (void *)&test_data_double;
 	    break;
 	  default:
 	    ERR(ERR_WRONG);
@@ -156,19 +139,33 @@ int test_gdal(int iosysid, int ioid, int num_flavors, int *flavor, int my_rank,
 	sprintf(filename, "data/simple.shp");
 
 	/* Open the file. */
-	if ((ret = GDALc_openfile(iosysid, &ncid2, &hDSp, &iotype, filename, PIO_NOWRITE)))
+	if ((ret = GDALc_openfile(iosysid, &shpid, &hDSp, &iotype, filename, PIO_NOWRITE)))
 	  ERR(ret);
 
-	if ((ret = GDALc_inq_fieldid(ncid2, "DistFld", &varid)))
+	if ((ret = GDALc_inq_fieldid(shpid, "DistFld", &varid)))
 	  ERR(ret);
 
 	/* Read the data. */
-	if ((ret = PIOc_read_darray(ncid2, varid, ioid, arraylen, (void *)test_data)))
+	if ((ret = PIOc_read_darray(shpid, varid, ioid, arraylen, (void *)test_data)))
 	  ERR(ret);
 	  
 	/* Close the GIS file. */
-	if ((ret = PIOc_closefile(ncid2)))
+	if ((ret = PIOc_closefile(shpid)))
 	  ERR(ret);
+
+	switch(pio_type) {
+	case PIO_INT:
+	  printf("int %d", ((int *)test_data));
+	  break;
+	case PIO_FLOAT:
+	  printf("float %f", ((float *)test_data));
+	  break;
+	case PIO_DOUBLE:
+	  printf("PE %d: double %lf\n", my_rank, ((double *)test_data)[0]);
+	  if (((double*)test_data)[0] != (double)expected_data[my_rank]) return ERR_WRONG;
+	  break;
+	}
+
       } /* next test multi */
 
     return PIO_NOERR;
@@ -191,7 +188,7 @@ int test_all_gdal(int iosysid, int num_flavors, int *flavor, int my_rank,
     int ioid;
     char filename[PIO_MAX_NAME + 1];
     int pio_type[NUM_TYPES_TO_TEST] = {PIO_DOUBLE};
-    int dim_len_1d[NDIM] = {X_DIM_LEN};//, Y_DIM_LEN};
+    int dim_len_1d[NDIM] = {X_DIM_LEN};
     int ret; /* Return code. */
 
     for (int t = 0; t < NUM_TYPES_TO_TEST; t++)
@@ -206,7 +203,7 @@ int test_all_gdal(int iosysid, int num_flavors, int *flavor, int my_rank,
         /* Run a simple darray test. */
         if ((ret = test_gdal(iosysid, ioid, num_flavors, flavor, my_rank, pio_type[t])))
 	  return ret;
-
+	
         /* Free the PIO decomposition. */
         if ((ret = PIOc_freedecomp(iosysid, ioid)))
 	  ERR(ret);
@@ -222,8 +219,8 @@ int main(int argc, char **argv)
     int rearranger[NUM_REARRANGERS_TO_TEST] = {PIO_REARR_SUBSET, PIO_REARR_BOX};
     int my_rank;
     int ntasks;
-    int num_flavors; /* Number of PIO netCDF flavors in this build. */
-    int flavor[NUM_FLAVORS]; /* iotypes for the supported netCDF IO flavors. */
+    int num_flavors; /* Number of PIO netCDF flavors in this build. Not used*/
+    int flavor[NUM_FLAVORS]; /* iotypes for the supported netCDF IO flavors. Not used*/
     MPI_Comm test_comm; /* A communicator for this test. */
     int ret;         /* Return code. */
 
@@ -259,8 +256,9 @@ int main(int argc, char **argv)
 
             /* Run tests. */
 	    printf("Testing rearranger = %d\n", rearranger[r]);
-            if ((ret = test_all_gdal(iosysid, num_flavors, flavor, my_rank, test_comm)))
-                return ret;
+            if ((ret = test_all_gdal(iosysid, num_flavors, flavor, my_rank, test_comm))) {
+	      fprintf(stderr, "Exiting with error code: %d\n", ret);
+	      return ret; }
 
             /* Finalize PIO system. */
             if ((ret = PIOc_free_iosystem(iosysid)))
@@ -274,6 +272,7 @@ int main(int argc, char **argv)
     /* if ((ret = pio_test_finalize2(&test_comm, TEST_NAME))) */
     /*     return ret; */
 
+    if (my_rank == 0) printf("Data should equal {366., 677.}\n");
     printf("%d %s SUCCESS!!\n", my_rank, TEST_NAME);
     return 0;
 }

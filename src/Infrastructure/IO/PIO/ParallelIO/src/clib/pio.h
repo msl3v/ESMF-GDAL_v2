@@ -611,13 +611,13 @@ typedef struct file_desc_t
      * feature. One consequence is that PIO_IOTYPE_NETCDF4C files will
      * not have deflate automatically turned on for each var. */
     int ncint_file;
-#ifdef PIO_ENABLE_GDAL
+//#ifdef PIO_ENABLE_GDAL
     /** GDAL specific vars - M.Long */
     GDALDatasetH *hDS;
     int dateVarID;     // Index of field with type OFTDate
     int timeVarID;     // Index of field with type OFTTime
     int datetimeVarID; // Index of field with type OFTDatetime
-#endif
+//#endif
 
 } file_desc_t;
 

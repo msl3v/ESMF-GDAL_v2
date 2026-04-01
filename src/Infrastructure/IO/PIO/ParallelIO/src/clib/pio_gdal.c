@@ -799,7 +799,6 @@ GDALc_shp_get_float_field(int fileid, int varid, const size_t *startp,
   file_desc_t *file;         /* Pointer to file information. */
   int ierr;
 
-    printf("top-of-method countp[0]: %d countp[1]: %d\n",countp[0],countp[1]);
   /* Get file info based on fileid. */
   if ((ierr = pio_get_file(fileid, &file)))
     return pio_err(NULL, NULL, ierr, __FILE__, __LINE__);
@@ -822,7 +821,7 @@ GDALc_shp_get_float_field(int fileid, int varid, const size_t *startp,
     // PLOG((3,"NULL at FID: %d  i: %d  start %d count %d",feat_id,i,startp[0],countp[0]));
     ip[i] = (float)OGR_F_GetFieldAsDouble(hF,varid);
     total += ip[i];
-    printf("%d: i: %d index: %d feat_id: %d countp %d value %f total %f\n",rank,i,i+startp[0],feat_id,countp[0],ip[i],total);
+//    printf("%d: i: %d index: %d feat_id: %d countp %d value %f total %f\n",rank,i,i+startp[0],feat_id,countp[0],ip[i],total);
   }
 
 //  printf("%d: total %f (count %d)\n",rank,total,countp[0]);
@@ -1144,16 +1143,10 @@ pio_read_darray_shp_par(file_desc_t *file, io_desc_t *iodesc, int vid, void *iob
                 vdesc->record = 0;
         }
 
-	PLOG((1, "pio_read_darray_shp_par: maxregions %d llen %d", iodesc->maxregions, iodesc->llen));
-	printf("pio_read_darray_shp_par: maxregions %d llen %zu fndims %d ndims %d\n",
-	       iodesc->maxregions, iodesc->llen, fndims, ndims);
-
-	/* For each regions, read the data. */
+        /* For each regions, read the data. */
         for (int regioncnt = 0; regioncnt < iodesc->maxregions; regioncnt++)
         {
-	  printf("  regioncnt %d region %s llen %zu\n",
-		 regioncnt, region == NULL ? "NULL" : "valid", iodesc->llen);
-	  if (region == NULL || iodesc->llen == 0)
+            if (region == NULL || iodesc->llen == 0)
             {
                 /* No data for this region. */
                 for (int i = 0; i < fndims; i++)
@@ -1199,9 +1192,6 @@ pio_read_darray_shp_par(file_desc_t *file, io_desc_t *iodesc, int vid, void *iob
                         count[i] = region->count[i];
                     }
                 }
-		for (int i = 0; i < fndims; i++)
-		  printf("  regioncnt %d start[%d]=%zu count[%d]=%zu\n", regioncnt, i, start[i], i, count[i]);
-
             }
 
 #ifdef PIO_ENABLE_LOGGING
@@ -1210,7 +1200,6 @@ pio_read_darray_shp_par(file_desc_t *file, io_desc_t *iodesc, int vid, void *iob
 	        PLOG((3, "piotype: %d (%d, %d)", iodesc->piotype, PIO_FLOAT, PIO_DOUBLE));
 #endif /* LOGGING */
             /* Do the read. */
-		printf("before switch: start[0]=%zu count[0]=%zu llen=%zu\n", start[0], count[0], iodesc->llen);
                 switch (iodesc->piotype)
                 {
 		case PIO_BYTE:
